@@ -1,12 +1,36 @@
 from flask import Flask, request, jsonify
 import re
 from datetime import datetime, timedelta
+import json
 import os
 
 app = Flask(__name__)
 
-# Simple user management (in production, use a database)
+# =============================================
+# YOUR ACTUAL BUSINESS CONFIGURATION
+# =============================================
+YOUR_BANK_DETAILS = {
+    'bank_name': 'ZenithBank',
+    'account_number': '4249996702',
+    'account_name': 'Aliyu Egwa Usman',
+}
+
+YOUR_CONTACT = {
+    'whatsapp_number': '09031769476',
+    'business_name': 'CyberGuard NG',
+    'email': 'aliyuhaydal9@gmail.com'
+}
+
+PRICING_PLANS = {
+    'daily': {'price': 200, 'duration': 1, 'name': 'Daily Premium'},
+    'weekly': {'price': 1000, 'duration': 7, 'name': 'Weekly Premium'},
+    'monthly': {'price': 3000, 'duration': 30, 'name': 'Monthly Premium'}
+}
+# =============================================
+
+# Storage (in production, use a database)
 users_db = {}
+payments_db = {}
 
 class UserManager:
     @staticmethod
@@ -14,9 +38,12 @@ class UserManager:
         return users_db.get(user_id, {
             'id': user_id,
             'is_premium': False,
+            'premium_until': None,
+            'premium_plan': None,
             'checks_today': 0,
             'last_check_date': None,
-            'total_checks': 0
+            'total_checks': 0,
+            'payment_pending': False
         })
     
     @staticmethod
@@ -29,7 +56,7 @@ class UserManager:
         if user['last_check_date'] != today:
             user['checks_today'] = 0
             user['last_check_date'] = today
-        return user['checks_today'] < 5
+        return user['checks_today'] < 5 or user['is_premium']
     
     @staticmethod
     def record_check(user):
@@ -37,6 +64,45 @@ class UserManager:
         user['total_checks'] += 1
         user['last_check_date'] = datetime.now().date()
         UserManager.save_user(user)
+    
+    @staticmethod
+    def activate_premium(user, plan_type, duration_days):
+        user['is_premium'] = True
+        user['premium_plan'] = plan_type
+        user['premium_until'] = (datetime.now() + timedelta(days=duration_days)).strftime('%Y-%m-%d')
+        user['payment_pending'] = False
+        UserManager.save_user(user)
+
+class PaymentManager:
+    @staticmethod
+    def create_payment(user_id, plan_type, phone_number):
+        payment_id = f"pay_{datetime.now().strftime('%Y%m%d%H%M%S')}_{user_id}"
+        payment = {
+            'id': payment_id,
+            'user_id': user_id,
+            'plan_type': plan_type,
+            'phone_number': phone_number,
+            'amount': PRICING_PLANS[plan_type]['price'],
+            'status': 'pending',
+            'created_at': datetime.now().isoformat(),
+            'verified_at': None,
+            'bank_details': YOUR_BANK_DETAILS
+        }
+        payments_db[payment_id] = payment
+        return payment
+    
+    @staticmethod
+    def get_payment(payment_id):
+        return payments_db.get(payment_id)
+    
+    @staticmethod
+    def update_payment_status(payment_id, status):
+        payment = payments_db.get(payment_id)
+        if payment:
+            payment['status'] = status
+            payment['verified_at'] = datetime.now().isoformat() if status == 'verified' else None
+            return True
+        return False
 
 @app.route('/')
 def home():
@@ -200,6 +266,13 @@ def home():
             border-radius: 8px;
             margin-bottom: 20px;
         }
+        .payment-instructions {
+            background: #e7f3ff;
+            border: 2px solid #007bff;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
         
         @media (max-width: 768px) {
             .pricing-cards { flex-direction: column; }
@@ -223,7 +296,9 @@ def home():
         <!-- SCANNER TAB -->
         <div id="scanner-content" class="tab-content active">
             <div class="user-stats" id="userStats">
-                <strong>Account:</strong> Free | <strong>Checks Today:</strong> <span id="checksCount">0</span>/5
+                <strong>Account:</strong> <span id="accountType">Free</span> | 
+                <strong>Checks Today:</strong> <span id="checksCount">0</span>/<span id="maxChecks">5</span>
+                <span id="premiumInfo" style="display: none;">| <strong>Premium Until:</strong> <span id="premiumUntil"></span></span>
             </div>
             
             <div class="section">
@@ -277,7 +352,7 @@ def home():
                         <li>✓ Detailed reports</li>
                         <li>✓ Priority support</li>
                     </ul>
-                    <button class="btn btn-premium" onclick="showPayment('daily')">Get Daily Premium</button>
+                    <button class="btn btn-premium" onclick="showPaymentForm('daily')">Get Daily Premium</button>
                 </div>
                 
                 <div class="pricing-card premium">
@@ -288,14 +363,29 @@ def home():
                         <li>✓ 7 days access</li>
                         <li>✓ Save ₦400</li>
                     </ul>
-                    <button class="btn btn-premium" onclick="showPayment('weekly')">Get Weekly Premium</button>
+                    <button class="btn btn-premium" onclick="showPaymentForm('weekly')">Get Weekly Premium</button>
                 </div>
             </div>
             
             <div id="paymentSection" style="display: none;">
-                <h3>Complete Your Payment</h3>
-                <p id="paymentInstructions"></p>
-                <button class="btn btn-premium" onclick="completePayment()">I have paid - Activate Premium</button>
+                <div class="payment-instructions">
+                    <h3>Complete Your Payment</h3>
+                    <div class="input-group">
+                        <input type="text" id="phoneNumber" placeholder="Enter your WhatsApp number" required>
+                    </div>
+                    <div id="paymentDetails"></div>
+                    <button class="btn btn-premium" onclick="initiatePayment()">Get Payment Instructions</button>
+                </div>
+                
+                <div id="paymentInstructions" style="display: none; margin-top: 20px;">
+                    <h4>💰 Payment Instructions:</h4>
+                    <div id="instructionsContent"></div>
+                    <p><strong>📱 WhatsApp Proof to: <span id="whatsappNumber">09031769476</span></strong></p>
+                    <div class="input-group">
+                        <input type="text" id="paymentIdInput" placeholder="Your Payment ID will appear here" readonly>
+                    </div>
+                    <button class="btn" onclick="checkPaymentStatus()">Check Payment Status</button>
+                </div>
             </div>
         </div>
         
@@ -303,9 +393,12 @@ def home():
         <div id="account-content" class="tab-content">
             <h2>My Account</h2>
             <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                <p><strong>User ID:</strong> <span id="accountUserId"></span></p>
                 <p><strong>Status:</strong> <span id="accountStatus">Free User</span></p>
-                <p><strong>Checks Today:</strong> <span id="accountChecks">0</span>/5</p>
+                <p><strong>Checks Today:</strong> <span id="accountChecks">0</span>/<span id="accountMaxChecks">5</span></p>
                 <p><strong>Total Checks:</strong> <span id="totalChecks">0</span></p>
+                <p id="accountPremiumInfo" style="display: none;"><strong>Premium Plan:</strong> <span id="premiumPlan"></span></p>
+                <p id="accountPremiumUntil" style="display: none;"><strong>Premium Until:</strong> <span id="premiumUntilDate"></span></p>
                 <button class="btn btn-premium" onclick="switchTab('premium')">Upgrade to Premium</button>
             </div>
         </div>
@@ -314,11 +407,11 @@ def home():
     <script>
         let currentUser = 'user_' + Math.random().toString(36).substr(2, 9);
         let selectedPlan = null;
-        let userStats = { checks_today: 0, total_checks: 0, is_premium: false };
+        let currentPaymentId = null;
         
-        // Load user stats on page load
         document.addEventListener('DOMContentLoaded', function() {
             loadUserStats();
+            document.getElementById('accountUserId').textContent = currentUser;
         });
         
         function switchTab(tabName) {
@@ -336,24 +429,40 @@ def home():
             try {
                 const response = await fetch('/api/user-stats?user_id=' + currentUser);
                 const data = await response.json();
-                userStats = data;
-                updateUI();
+                updateUI(data);
             } catch (error) {
                 console.log('Using default stats');
             }
         }
         
-        function updateUI() {
-            document.getElementById('checksCount').textContent = userStats.checks_today;
-            document.getElementById('accountChecks').textContent = userStats.checks_today;
-            document.getElementById('totalChecks').textContent = userStats.total_checks;
-            document.getElementById('accountStatus').textContent = userStats.is_premium ? 'Premium User 🏆' : 'Free User';
+        function updateUI(stats) {
+            const isPremium = stats.is_premium;
+            const maxChecks = isPremium ? '∞' : '5';
+            
+            document.getElementById('checksCount').textContent = stats.checks_today;
+            document.getElementById('maxChecks').textContent = maxChecks;
+            document.getElementById('accountType').textContent = isPremium ? 'Premium 🏆' : 'Free';
+            document.getElementById('accountChecks').textContent = stats.checks_today;
+            document.getElementById('accountMaxChecks').textContent = maxChecks;
+            document.getElementById('totalChecks').textContent = stats.total_checks;
+            document.getElementById('accountStatus').textContent = isPremium ? 'Premium User 🏆' : 'Free User';
+            
+            if (isPremium && stats.premium_until) {
+                document.getElementById('premiumInfo').style.display = 'inline';
+                document.getElementById('premiumUntil').textContent = stats.premium_until;
+                document.getElementById('accountPremiumInfo').style.display = 'block';
+                document.getElementById('accountPremiumUntil').style.display = 'block';
+                document.getElementById('premiumPlan').textContent = stats.premium_plan || 'Premium';
+                document.getElementById('premiumUntilDate').textContent = stats.premium_until;
+            } else {
+                document.getElementById('premiumInfo').style.display = 'none';
+                document.getElementById('accountPremiumInfo').style.display = 'none';
+                document.getElementById('accountPremiumUntil').style.display = 'none';
+            }
         }
         
         function updateAccountInfo() {
-            document.getElementById('accountChecks').textContent = userStats.checks_today;
-            document.getElementById('totalChecks').textContent = userStats.total_checks;
-            document.getElementById('accountStatus').textContent = userStats.is_premium ? 'Premium User 🏆' : 'Free User';
+            loadUserStats();
         }
         
         async function checkUSSD() {
@@ -369,7 +478,7 @@ def home():
                 
                 const result = await response.json();
                 showResult(result);
-                loadUserStats(); // Refresh stats
+                loadUserStats();
             } catch (error) {
                 showResult({
                     message: '❌ Network error. Please try again.',
@@ -391,7 +500,7 @@ def home():
                 
                 const result = await response.json();
                 showResult(result);
-                loadUserStats(); // Refresh stats
+                loadUserStats();
             } catch (error) {
                 showResult({
                     message: '❌ Network error. Please try again.',
@@ -415,22 +524,89 @@ def home():
             } else {
                 premiumFeature.style.display = 'none';
             }
+            
+            if (data.limit_reached) {
+                setTimeout(() => switchTab('premium'), 2000);
+            }
         }
         
-        function showPayment(plan) {
+        function showPaymentForm(plan) {
             selectedPlan = plan;
+            document.getElementById('paymentSection').style.display = 'block';
+            document.getElementById('paymentInstructions').style.display = 'none';
+            
             const plans = {
-                'daily': 'Send ₦200 via bank transfer to: GTBank - 0123456789 - CyberGuard NG. WhatsApp proof to activate.',
-                'weekly': 'Send ₦1,000 via bank transfer to: GTBank - 0123456789 - CyberGuard NG. WhatsApp proof to activate.'
+                'daily': { price: 200, name: 'Daily Premium' },
+                'weekly': { price: 1000, name: 'Weekly Premium' }
             };
             
-            document.getElementById('paymentInstructions').textContent = plans[plan];
-            document.getElementById('paymentSection').style.display = 'block';
+            const planInfo = plans[plan];
+            document.getElementById('paymentDetails').innerHTML = `
+                <p><strong>Plan:</strong> ${planInfo.name}</p>
+                <p><strong>Amount:</strong> ₦${planInfo.price}</p>
+                <p><strong>Duration:</strong> ${plan === 'daily' ? '24 hours' : '7 days'}</p>
+            `;
         }
         
-        async function completePayment() {
-            alert('🎉 Thank you! Contact us on WhatsApp with your payment proof to activate premium.');
-            document.getElementById('paymentSection').style.display = 'none';
+        async function initiatePayment() {
+            const phone = document.getElementById('phoneNumber').value;
+            if (!phone) {
+                alert('Please enter your WhatsApp number');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/initiate-payment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        user_id: currentUser, 
+                        plan_type: selectedPlan,
+                        phone_number: phone 
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    currentPaymentId = result.payment_id;
+                    document.getElementById('instructionsContent').innerHTML = result.instructions.replace(/\n/g, '<br>');
+                    document.getElementById('paymentIdInput').value = result.payment_id;
+                    document.getElementById('paymentInstructions').style.display = 'block';
+                    document.getElementById('whatsappNumber').textContent = result.whatsapp_number;
+                    
+                    alert('Payment instructions generated! Please follow them carefully.');
+                } else {
+                    alert('Error: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+            }
+        }
+        
+        async function checkPaymentStatus() {
+            if (!currentPaymentId) {
+                alert('No payment ID found. Please initiate a payment first.');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/check-payment-status?payment_id=${currentPaymentId}&user_id=${currentUser}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    if (result.payment_status === 'verified' || result.user_premium) {
+                        alert('🎉 Payment verified! Your premium account is now active!');
+                        loadUserStats();
+                        switchTab('scanner');
+                    } else {
+                        alert('Payment status: ' + result.payment_status + '. We are still verifying your payment.');
+                    }
+                } else {
+                    alert('Error checking payment: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+            }
         }
     </script>
 </body>
@@ -441,10 +617,21 @@ def home():
 def api_user_stats():
     user_id = request.args.get('user_id', 'default')
     user = UserManager.get_user(user_id)
+    
+    # Check if premium has expired
+    if user['premium_until'] and datetime.now().strftime('%Y-%m-%d') > user['premium_until']:
+        user['is_premium'] = False
+        user['premium_plan'] = None
+        user['premium_until'] = None
+        UserManager.save_user(user)
+    
     return jsonify({
         'is_premium': user['is_premium'],
+        'premium_until': user['premium_until'],
+        'premium_plan': user['premium_plan'],
         'checks_today': user['checks_today'],
-        'total_checks': user['total_checks']
+        'total_checks': user['total_checks'],
+        'payment_pending': user['payment_pending']
     })
 
 @app.route('/api/check-ussd', methods=['POST'])
@@ -455,7 +642,12 @@ def api_check_ussd():
     
     user = UserManager.get_user(user_id)
     
-    # Check free limit
+    # Check premium status and limits
+    if user['premium_until'] and datetime.now().strftime('%Y-%m-%d') > user['premium_until']:
+        user['is_premium'] = False
+        user['premium_plan'] = None
+        user['premium_until'] = None
+    
     if not user['is_premium'] and not UserManager.can_make_free_check(user):
         return jsonify({
             'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited checks.',
@@ -465,7 +657,7 @@ def api_check_ussd():
     
     UserManager.record_check(user)
     
-    # Advanced USSD analysis
+    # USSD analysis logic
     safe_codes = ['*901#', '*894#', '*737#', '*919#', '*822#', '*533#', '*322#', '*326#']
     scam_indicators = ['password', 'pin', 'bvn', 'winner', 'won', 'prize', 'lottery', 'claim']
     
@@ -478,7 +670,7 @@ def api_check_ussd():
     elif any(indicator in code_lower for indicator in scam_indicators):
         message = '🚨 DANGER - This USSD code contains scam patterns!'
         result_type = 'scam'
-        premium_features = 'Upgrade to Premium for detailed scam analysis'
+        premium_features = '🔍 Premium Analysis: Contains known scam keywords' if user['is_premium'] else 'Upgrade to Premium for detailed scam analysis'
     elif re.match(r'^\*\d{3}#$', code):
         message = '✅ LIKELY SAFE - Standard USSD format'
         result_type = 'safe'
@@ -502,7 +694,12 @@ def api_check_sms():
     
     user = UserManager.get_user(user_id)
     
-    # Check free limit
+    # Check premium status and limits
+    if user['premium_until'] and datetime.now().strftime('%Y-%m-%d') > user['premium_until']:
+        user['is_premium'] = False
+        user['premium_plan'] = None
+        user['premium_until'] = None
+    
     if not user['is_premium'] and not UserManager.can_make_free_check(user):
         return jsonify({
             'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited scans.',
@@ -512,7 +709,7 @@ def api_check_sms():
     
     UserManager.record_check(user)
     
-    # Advanced SMS analysis
+    # SMS analysis logic
     sms_lower = sms.lower()
     score = 0
     reasons = []
@@ -545,7 +742,7 @@ def api_check_sms():
         message = '✅ Likely legitimate message'
         result_type = 'safe'
     
-    premium_features = f'Score: {score}/30 - Detected patterns'
+    premium_features = f'🔍 Premium Analysis: Score {score}/30 - {", ".join(reasons[:2])}' if user['is_premium'] else 'Upgrade to Premium for detailed threat analysis'
     
     return jsonify({
         'message': message,
@@ -553,19 +750,99 @@ def api_check_sms():
         'premium_features': premium_features
     })
 
-@app.route('/api/upgrade-premium', methods=['POST'])
-def api_upgrade_premium():
+@app.route('/api/initiate-payment', methods=['POST'])
+def api_initiate_payment():
     data = request.get_json()
     user_id = data.get('user_id')
+    plan_type = data.get('plan_type')
+    phone_number = data.get('phone_number')
     
+    if not user_id or not plan_type or not phone_number:
+        return jsonify({'success': False, 'message': 'Missing required fields'})
+    
+    if plan_type not in PRICING_PLANS:
+        return jsonify({'success': False, 'message': 'Invalid plan type'})
+    
+    # Create payment record
+    payment = PaymentManager.create_payment(user_id, plan_type, phone_number)
+    
+    # Update user to show payment pending
     user = UserManager.get_user(user_id)
-    user['is_premium'] = True
+    user['payment_pending'] = True
     UserManager.save_user(user)
+    
+    # Generate payment instructions with YOUR details
+    plan = PRICING_PLANS[plan_type]
+    instructions = f"""Amount: ₦{plan['price']: ,}
+Bank: {YOUR_BANK_DETAILS['bank_name']}
+Account Number: {YOUR_BANK_DETAILS['account_number']}
+Account Name: {YOUR_BANK_DETAILS['account_name']}
+
+After payment, WhatsApp screenshot to: {YOUR_CONTACT['whatsapp_number']}
+Include your Payment ID: {payment['id']}
+
+We'll activate your premium within 1 hour of payment verification!"""
     
     return jsonify({
         'success': True,
-        'message': 'Premium activated! You now have unlimited access.'
+        'payment_id': payment['id'],
+        'instructions': instructions,
+        'whatsapp_number': YOUR_CONTACT['whatsapp_number']
     })
+
+@app.route('/api/check-payment-status', methods=['GET'])
+def api_check_payment_status():
+    payment_id = request.args.get('payment_id')
+    user_id = request.args.get('user_id')
+    
+    payment = PaymentManager.get_payment(payment_id)
+    if not payment or payment['user_id'] != user_id:
+        return jsonify({'success': False, 'message': 'Payment not found'})
+    
+    user = UserManager.get_user(user_id)
+    
+    return jsonify({
+        'success': True,
+        'payment_status': payment['status'],
+        'user_premium': user['is_premium'],
+        'premium_until': user['premium_until']
+    })
+
+# Admin endpoint to verify payments
+@app.route('/admin/verify-payment', methods=['POST'])
+def admin_verify_payment():
+    # Simple authentication (in production, use proper auth)
+    auth = request.headers.get('Authorization')
+    if auth != 'Bearer CyberGuardAdmin2024':
+        return jsonify({'success': False, 'message': 'Unauthorized'})
+    
+    data = request.get_json()
+    payment_id = data.get('payment_id')
+    action = data.get('action')  # 'approve' or 'reject'
+    
+    payment = PaymentManager.get_payment(payment_id)
+    if not payment:
+        return jsonify({'success': False, 'message': 'Payment not found'})
+    
+    if action == 'approve':
+        PaymentManager.update_payment_status(payment_id, 'verified')
+        # Activate premium for user
+        user = UserManager.get_user(payment['user_id'])
+        plan = PRICING_PLANS[payment['plan_type']]
+        UserManager.activate_premium(user, payment['plan_type'], plan['duration'])
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Premium activated for user {payment["user_id"]}'
+        })
+    elif action == 'reject':
+        PaymentManager.update_payment_status(payment_id, 'rejected')
+        user = UserManager.get_user(payment['user_id'])
+        user['payment_pending'] = False
+        UserManager.save_user(user)
+        return jsonify({'success': True, 'message': 'Payment rejected'})
+    else:
+        return jsonify({'success': False, 'message': 'Invalid action'})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
