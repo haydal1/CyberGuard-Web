@@ -51,57 +51,78 @@ SESSIONS_FILE = 'sessions.json'
 OTP_STORAGE_FILE = 'otp_storage.json'
 
 class Database:
+    # Use in-memory storage for Vercel (no file writing)
+    _users_cache = {}
+    _payments_cache = {}
+    _sessions_cache = {}
+    _otp_cache = {}
+    
     @staticmethod
     def load_users():
         try:
-            with open(USERS_FILE, 'r') as f:
-                return json.load(f)
+            # Try to load from file first (for initial data)
+            if os.path.exists(USERS_FILE):
+                with open(USERS_FILE, 'r') as f:
+                    initial_data = json.load(f)
+                    Database._users_cache.update(initial_data)
+            return Database._users_cache
         except:
-            return {}
+            return Database._users_cache
     
     @staticmethod
     def save_users(users):
-        with open(USERS_FILE, 'w') as f:
-            json.dump(users, f, indent=2)
+        # VERCEL FIX: Don't write to file system
+        print(f"DEBUG: Would save {len(users)} users (file writing disabled on Vercel)")
+        # Don't write to file on Vercel
+        return True
     
     @staticmethod
     def load_payments():
         try:
-            with open(PAYMENTS_FILE, 'r') as f:
-                return json.load(f)
+            if os.path.exists(PAYMENTS_FILE):
+                with open(PAYMENTS_FILE, 'r') as f:
+                    initial_data = json.load(f)
+                    Database._payments_cache.update(initial_data)
+            return Database._payments_cache
         except:
-            return {}
+            return Database._payments_cache
     
     @staticmethod
     def save_payments(payments):
-        with open(PAYMENTS_FILE, 'w') as f:
-            json.dump(payments, f, indent=2)
+        print(f"DEBUG: Would save {len(payments)} payments (file writing disabled)")
+        return True
     
     @staticmethod
     def load_sessions():
         try:
-            with open(SESSIONS_FILE, 'r') as f:
-                return json.load(f)
+            if os.path.exists(SESSIONS_FILE):
+                with open(SESSIONS_FILE, 'r') as f:
+                    initial_data = json.load(f)
+                    Database._sessions_cache.update(initial_data)
+            return Database._sessions_cache
         except:
-            return {}
+            return Database._sessions_cache
     
     @staticmethod
     def save_sessions(sessions):
-        with open(SESSIONS_FILE, 'w') as f:
-            json.dump(sessions, f, indent=2)
+        print(f"DEBUG: Would save {len(sessions)} sessions (file writing disabled)")
+        return True
     
     @staticmethod
     def load_otp_storage():
         try:
-            with open(OTP_STORAGE_FILE, 'r') as f:
-                return json.load(f)
+            if os.path.exists(OTP_STORAGE_FILE):
+                with open(OTP_STORAGE_FILE, 'r') as f:
+                    initial_data = json.load(f)
+                    Database._otp_cache.update(initial_data)
+            return Database._otp_cache
         except:
-            return {}
+            return Database._otp_cache
     
     @staticmethod
     def save_otp_storage(otp_storage):
-        with open(OTP_STORAGE_FILE, 'w') as f:
-            json.dump(otp_storage, f, indent=2)
+        print(f"DEBUG: Would save OTP data (file writing disabled)")
+        return True
 
 class EmailService:
     @staticmethod
@@ -277,7 +298,6 @@ class UserManager:
                 # Update last login
                 user['last_login'] = datetime.now().isoformat()
                 users[user['id']] = user
-                Database.save_users(users)
                 return user
         return None
     
