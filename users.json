@@ -1,0 +1,37 @@
+{
+  "user_1764464362": {
+    "id": "user_1764464362",
+    "email": "aliyuhaydal8@gmail.com",
+    "password_hash": "59f5d557900f9e94519b79098d83a6d27141301ca781efdb2e9fc66552ef8b2e",
+    "phone_number": "07018058529",
+    "name": "hassan musa ando",
+    "is_verified": false,
+    "is_premium": false,
+    "premium_until": null,
+    "premium_plan": null,
+    "checks_today": 0,
+    "last_check_date": "2025-11-30",
+    "total_checks": 0,
+    "payment_pending": false,
+    "created_at": "2025-11-30T01:59:22.671184",
+    "last_login": "2025-11-30T03:45:15.347898"
+  },
+  "user_1764466959": {
+    "id": "user_1764466959",
+    "email": "aliyuhaydal9@gmail.com",
+    "password_hash": "59f5d557900f9e94519b79098d83a6d27141301ca781efdb2e9fc66552ef8b2e",
+    "phone_number": "09031769476",
+    "name": "Aliyu Usman Egwa",
+    "is_verified": true,
+    "is_premium": false,
+    "premium_until": null,
+    "premium_plan": null,
+    "checks_today": 2,
+    "last_check_date": "2025-11-30",
+    "total_checks": 2,
+    "payment_pending": false,
+    "created_at": "2025-11-30T02:42:39.676562",
+    "last_login": "2025-11-30T04:23:34.343183",
+    "last_active": "2025-11-30T04:23:34.361470"
+  }
+}

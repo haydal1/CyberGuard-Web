@@ -1,0 +1,16 @@
+{
+  "aliyuhaydal8@gmail.com": {
+    "otp_code": "117235",
+    "email": "aliyuhaydal8@gmail.com",
+    "created_at": "2025-11-30T02:05:33.216935",
+    "expires_at": "2025-11-30T02:15:33.216955",
+    "verified": false
+  },
+  "aliyuhaydal9@gmail.com": {
+    "otp_code": "673913",
+    "email": "aliyuhaydal9@gmail.com",
+    "created_at": "2025-11-30T04:04:26.463927",
+    "expires_at": "2025-11-30T04:14:26.463960",
+    "verified": true
+  }
+}
