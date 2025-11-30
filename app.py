@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from flask import send_from_directory
+from pymongo import MongoClient
 import os
 import re
 from datetime import datetime, timedelta
-import os
 import json
 import smtplib
 import random
@@ -52,49 +52,174 @@ PAYMENTS_FILE = 'payments.json'
 SESSIONS_FILE = 'sessions.json'
 OTP_STORAGE_FILE = 'otp_storage.json'
 
+from pymongo import MongoClient
+import os
+
 class Database:
-    # Pure in-memory storage for Vercel
-    _memory_storage = {
-        'users': {},
-        'payments': {}, 
-        'sessions': {},
-        'otp_storage': {}
-    }
+    # MongoDB connection through Vercel
+    _client = None
+    _db = None
+    
+    @staticmethod
+    def get_db():
+        if Database._db is None:
+            try:
+                # Vercel automatically provides MONGODB_URI
+                connection_string = os.environ.get('MONGODB_URI')
+                if not connection_string:
+                    print("❌ MONGODB_URI not found in environment")
+                    return None
+                
+                Database._client = MongoClient(connection_string)
+                # Get the database name from connection string or use default
+                Database._db = Database._client.get_database()
+                print("✅ Connected to MongoDB via Vercel")
+                return Database._db
+            except Exception as e:
+                print(f"❌ MongoDB connection failed: {e}")
+                return None
+        return Database._db
     
     @staticmethod
     def load_users():
-        return Database._memory_storage['users']
+        db = Database.get_db()
+        if db:
+            try:
+                users = {}
+                # Create users collection if it doesn't exist
+                if 'users' not in db.list_collection_names():
+                    db.create_collection('users')
+                
+                for user in db.users.find():
+                    # Convert MongoDB document to dict and remove _id
+                    user_dict = {k: v for k, v in user.items() if k != '_id'}
+                    users[user_dict['id']] = user_dict
+                return users
+            except Exception as e:
+                print(f"Error loading users from MongoDB: {e}")
+                return {}
+        print("⚠️ Using in-memory fallback for users")
+        return getattr(Database, '_users_cache', {})
     
     @staticmethod
     def save_users(users):
-        Database._memory_storage['users'] = users
+        db = Database.get_db()
+        if db:
+            try:
+                users_list = list(users.values())
+                if users_list:
+                    # Clear and insert fresh data
+                    db.users.delete_many({})
+                    db.users.insert_many(users_list)
+                print(f"✅ Saved {len(users_list)} users to MongoDB")
+                return True
+            except Exception as e:
+                print(f"Error saving users to MongoDB: {e}")
+                return False
+        print("⚠️ Saving users to in-memory fallback")
+        Database._users_cache = users
         return True
     
     @staticmethod
     def load_payments():
-        return Database._memory_storage['payments']
+        db = Database.get_db()
+        if db:
+            try:
+                payments = {}
+                if 'payments' not in db.list_collection_names():
+                    db.create_collection('payments')
+                
+                for payment in db.payments.find():
+                    payment_dict = {k: v for k, v in payment.items() if k != '_id'}
+                    payments[payment_dict['id']] = payment_dict
+                return payments
+            except Exception as e:
+                print(f"Error loading payments from MongoDB: {e}")
+                return {}
+        return getattr(Database, '_payments_cache', {})
     
     @staticmethod
     def save_payments(payments):
-        Database._memory_storage['payments'] = payments
+        db = Database.get_db()
+        if db:
+            try:
+                payments_list = list(payments.values())
+                if payments_list:
+                    db.payments.delete_many({})
+                    db.payments.insert_many(payments_list)
+                return True
+            except Exception as e:
+                print(f"Error saving payments to MongoDB: {e}")
+                return False
+        Database._payments_cache = payments
         return True
     
     @staticmethod
     def load_sessions():
-        return Database._memory_storage['sessions']
+        db = Database.get_db()
+        if db:
+            try:
+                sessions = {}
+                if 'sessions' not in db.list_collection_names():
+                    db.create_collection('sessions')
+                
+                for session in db.sessions.find():
+                    session_dict = {k: v for k, v in session.items() if k != '_id'}
+                    sessions[session_dict.get('session_token')] = session_dict
+                return sessions
+            except Exception as e:
+                print(f"Error loading sessions from MongoDB: {e}")
+                return {}
+        return getattr(Database, '_sessions_cache', {})
     
     @staticmethod
     def save_sessions(sessions):
-        Database._memory_storage['sessions'] = sessions
+        db = Database.get_db()
+        if db:
+            try:
+                sessions_list = list(sessions.values())
+                if sessions_list:
+                    db.sessions.delete_many({})
+                    db.sessions.insert_many(sessions_list)
+                return True
+            except Exception as e:
+                print(f"Error saving sessions to MongoDB: {e}")
+                return False
+        Database._sessions_cache = sessions
         return True
     
     @staticmethod
     def load_otp_storage():
-        return Database._memory_storage['otp_storage']
+        db = Database.get_db()
+        if db:
+            try:
+                otp_storage = {}
+                if 'otp_storage' not in db.list_collection_names():
+                    db.create_collection('otp_storage')
+                
+                for otp in db.otp_storage.find():
+                    otp_dict = {k: v for k, v in otp.items() if k != '_id'}
+                    otp_storage[otp_dict.get('email')] = otp_dict
+                return otp_storage
+            except Exception as e:
+                print(f"Error loading OTP storage from MongoDB: {e}")
+                return {}
+        return getattr(Database, '_otp_cache', {})
     
     @staticmethod
     def save_otp_storage(otp_storage):
-        Database._memory_storage['otp_storage'] = otp_storage
+        db = Database.get_db()
+        if db:
+            try:
+                otp_list = list(otp_storage.values())
+                if otp_list:
+                    db.otp_storage.delete_many({})
+                    db.otp_storage.insert_many(otp_list)
+                return True
+            except Exception as e:
+                print(f"Error saving OTP storage to MongoDB: {e}")
+                return False
+        Database._otp_cache = otp_storage
         return True
 
 class EmailService:
@@ -678,14 +803,14 @@ def home():
         </div>
         
         <div class="tabs">
-            <button class="tab active" onclick="switchTab('scanner')">Security Scanner</button>
-            <button class="tab" onclick="switchTab('register')">Register</button>
-            <button class="tab" onclick="switchTab('verify')">Verify Email</button>
-            <button class="tab" onclick="switchTab('login')">Login</button>
-            <button class="tab" onclick="switchTab('premium')">Go Premium</button>
-            <button class="tab" onclick="switchTab('account')">My Account</button>
-            <button class="tab" onclick="switchTab('admin')">Admin</button>
-        </div>
+    <button class="tab active" onclick="switchTab('scanner', event)">Security Scanner</button>
+    <button class="tab" onclick="switchTab('register', event)">Register</button>
+    <button class="tab" onclick="switchTab('verify', event)">Verify Email</button>
+    <button class="tab" onclick="switchTab('login', event)">Login</button>
+    <button class="tab" onclick="switchTab('premium', event)">Go Premium</button>
+    <button class="tab" onclick="switchTab('account', event)">My Account</button>
+    <button class="tab" onclick="switchTab('admin', event)">Admin</button>
+</div>
         
         <!-- SCANNER TAB -->
         <div id="scanner-content" class="tab-content active">
@@ -727,28 +852,31 @@ def home():
         </div>
         
         <!-- REGISTER TAB -->
-        <div id="register-content" class="tab-content">
-            <h2>Register for CyberGuard NG</h2>
-            <p>Create your account to start protecting yourself from fraud</p>
-            
-            <div class="registration-section">
-                <div class="input-group">
-                    <input type="text" id="userName" placeholder="Your Full Name" autocomplete="name">
-                </div>
-                <div class="input-group">
-                    <input type="email" id="userEmail" placeholder="Your Email Address (Required)" required autocmplete="email">
-                </div>
-                <div class="input-group">
-                    <input type="password" id="userPassword" placeholder="Password (Minimum 6 characters)" required autocomplete="new-password">
-                </div>
-                <div class="input-group">
-                    <input type="password" id="userConfirmPassword" placeholder="Confirm Password" required autocomplete="new-password">
-                </div>
-                <div class="input-group">
-                    <input type="text" id="userPhone" placeholder="Your WhatsApp Number (Required)" required autocomplete="tel">
-                </div>
-                <button class="btn btn-premium" onclick="registerUser()">Create Account & Send OTP</button>
+<div id="register-content" class="tab-content">
+    <h2>Register for CyberGuard NG</h2>
+    <p>Create your account to start protecting yourself from fraud</p>
+
+    <div class="registration-section">
+        <form onsubmit="registerUser(); return false">
+            <div class="input-group">
+                <input type="text" id="userName" placeholder="Your Full Name" autocomplete="name">
             </div>
+            <div class="input-group">
+                <input type="email" id="userEmail" placeholder="Your Email Address (Required)" required autocomplete="email">
+            </div>
+            <div class="input-group">
+                <input type="password" id="userPassword" placeholder="Password (Minimum 6 characters)" required autocomplete="new-password">
+            </div>
+            <div class="input-group">
+                <input type="password" id="userConfirmPassword" placeholder="Confirm Password" required autocomplete="new-password">
+            </div>
+            <div class="input-group">
+                <input type="text" id="userPhone" placeholder="Your WhatsApp Number (Required)" required autocomplete="tel">
+            </div>
+            <button type="submit" class="btn btn-premium">Create Account & Send OTP</button>
+        </form>
+    </div>
+    
             
             <div id="otpVerificationSection" class="otp-section" style="display: none;">
                 <h3>📧 Verify Your Email</h3>
@@ -771,16 +899,14 @@ def home():
             </div>
         </div>
         <!-- VERIFY EMAIL TAB -->
-<div id="verify-content" class="tab-content">
-    <h2>Verify Your Email</h2>
-    <p>Already registered but didn't verify your email? Get a new OTP code here.</p>
-    
-    <div class="registration-section">
+<div class="registration-section">
+    <form onsubmit="sendVerificationOTP(); return false">
         <div class="input-group">
-            <input type="email" id="verifyEmail" placeholder="Enter your registered email" required>
+            <input type="email" id="verifyEmail" placeholder="Enter your registered email" required autocomplete="email">
         </div>
-        <button class="btn btn-premium" onclick="sendVerificationOTP()">Send New OTP Code</button>
-    </div>
+        <button type="submit" class="btn btn-premium">Send New OTP Code</button>
+    </form>
+</div>
     
     <div id="verifyOtpSection" class="otp-section" style="display: none;">
         <h3>📧 Enter OTP Code</h3>
@@ -802,19 +928,17 @@ def home():
 </div>
         
         <!-- LOGIN TAB -->
-        <div id="login-content" class="tab-content">
-            <h2>Login to Your Account</h2>
-            <p>Access your CyberGuard NG account</p>
-            
-            <div class="login-section">
-                <div class="input-group">
-                    <input type="email" id="loginEmail" placeholder="Your Email Address">
-                </div>
-                <div class="input-group">
-                    <input type="password" id="loginPassword" placeholder="Your Password" autocomplete="current-password">
-                </div>
-                <button class="btn btn-premium" onclick="loginUser()">Login to Account</button>
-            </div>
+<div class="login-section">
+    <form onsubmit="loginUser(); return false">
+        <div class="input-group">
+            <input type="email" id="loginEmail" placeholder="Your Email Address" autocomplete="email">
+        </div>
+        <div class="input-group">
+            <input type="password" id="loginPassword" placeholder="Your Password" autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-premium">Login to Account</button>
+    </form>
+</div>
             
             <div style="text-align: center; margin-top: 20px;">
                 <p>Don't have an account? <a href="javascript:void(0)" onclick="switchTab('register')">Register here</a></p>
@@ -934,14 +1058,12 @@ def home():
         </div>
         
         <!-- ADMIN TAB -->
-        <div id="admin-content" class="tab-content">
-            <h2>Admin Panel</h2>
-            <p>Manage users and activate premiums</p>
-            
-            <div class="input-group">
-                <input type="password" id="adminPassword" placeholder="Enter Admin Password">
-                <button class="btn btn-info" onclick="loginAdmin()">Access Admin Panel</button>
-            </div>
+<div class="input-group">
+    <form onsubmit="loginAdmin(); return false">
+        <input type="password" id="adminPassword" placeholder="Enter Admin Password" autocomplete="current-password">
+        <button type="submit" class="btn btn-info">Access Admin Panel</button>
+    </form>
+</div>
             
             <div id="adminPanel" style="display: none;">
                 <h3>User Management</h3>
@@ -1051,16 +1173,23 @@ function clearOtpForm() {
             document.getElementById('accountNotLoggedIn').style.display = 'block';
         }
         
-        function switchTab(tabName) {
-            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-            event.target.classList.add('active');
-            document.getElementById(tabName + '-content').classList.add('active');
-            
-            if (tabName === 'account' && currentUser) {
-                updateAccountInfo();
-            }
-        }
+        function switchTab(tabName, event = null) {
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+    
+    // Get the clicked element properly
+    let clickedElement = event ? event.currentTarget : document.querySelector(`[onclick*="${tabName}"]`);
+    
+    if (clickedElement) {
+        clickedElement.classList.add('active');
+    }
+    
+    document.getElementById(tabName + '-content').classList.add('active');
+    
+    if (tabName === 'account' && currentUser) {
+        updateAccountInfo();
+    }
+}
         
         async function registerUser() {
             const email = document.getElementById('userEmail').value;
@@ -2260,6 +2389,15 @@ def api_admin_verify_payment():
         'message': f'Premium activated for user {payment["user_id"]}'
     })
 
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # "No Content - stops 404 error
+
+@app.route('/favicon.png')
+def favicon_png():
+    return '', 204
+
+
 @app.route('/api/admin/activate-premium', methods=['POST'])
 def api_admin_activate_premium():
     data = request.get_json()
@@ -2289,13 +2427,45 @@ def api_admin_verify_user():
         return jsonify({'success': True, 'message': f'User {user_id} verified'})
     return jsonify({'success': False, 'message': 'User not found'})
 
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204  # Return "No Content" instead of 404
+@app.route('/api/debug-db')
+def debug_db():
+    """Test MongoDB connection"""
+    try:
+        db = Database.get_db()
+        users_count = len(Database.load_users())
+        
+        return jsonify({
+            'mongodb_connected': db is not None,
+            'total_users': users_count,
+            'database_name': db.name if db else 'None',
+            'collections': db.list_collection_names() if db else []
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/favicon.png')  
-def favicon_png():
-    return '', 204
+@app.route('/api/test-persistence')
+def test_persistence():
+    """Test if data persists"""
+    try:
+        # Create a test user if none exists
+        users = Database.load_users()
+        test_user_id = 'test_persistence_user'
+        
+        if test_user_id not in users:
+            users[test_user_id] = {
+                'id': test_user_id,
+                'email': 'test@persistence.com',
+                'created_at': datetime.now().isoformat()
+            }
+            Database.save_users(users)
+        
+        return jsonify({
+            'test_user_exists': test_user_id in users,
+            'total_users': len(users),
+            'persistence': 'working' if test_user_id in users else 'broken'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
