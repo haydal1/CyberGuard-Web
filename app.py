@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify
+from flask import send_from_directory
+import os
 import re
 from datetime import datetime, timedelta
 import os
@@ -51,77 +53,48 @@ SESSIONS_FILE = 'sessions.json'
 OTP_STORAGE_FILE = 'otp_storage.json'
 
 class Database:
-    # Use in-memory storage for Vercel (no file writing)
-    _users_cache = {}
-    _payments_cache = {}
-    _sessions_cache = {}
-    _otp_cache = {}
+    # Pure in-memory storage for Vercel
+    _memory_storage = {
+        'users': {},
+        'payments': {}, 
+        'sessions': {},
+        'otp_storage': {}
+    }
     
     @staticmethod
     def load_users():
-        try:
-            # Try to load from file first (for initial data)
-            if os.path.exists(USERS_FILE):
-                with open(USERS_FILE, 'r') as f:
-                    initial_data = json.load(f)
-                    Database._users_cache.update(initial_data)
-            return Database._users_cache
-        except:
-            return Database._users_cache
+        return Database._memory_storage['users']
     
     @staticmethod
     def save_users(users):
-        # VERCEL FIX: Don't write to file system
-        print(f"DEBUG: Would save {len(users)} users (file writing disabled on Vercel)")
-        # Don't write to file on Vercel
+        Database._memory_storage['users'] = users
         return True
     
     @staticmethod
     def load_payments():
-        try:
-            if os.path.exists(PAYMENTS_FILE):
-                with open(PAYMENTS_FILE, 'r') as f:
-                    initial_data = json.load(f)
-                    Database._payments_cache.update(initial_data)
-            return Database._payments_cache
-        except:
-            return Database._payments_cache
+        return Database._memory_storage['payments']
     
     @staticmethod
     def save_payments(payments):
-        print(f"DEBUG: Would save {len(payments)} payments (file writing disabled)")
+        Database._memory_storage['payments'] = payments
         return True
     
     @staticmethod
     def load_sessions():
-        try:
-            if os.path.exists(SESSIONS_FILE):
-                with open(SESSIONS_FILE, 'r') as f:
-                    initial_data = json.load(f)
-                    Database._sessions_cache.update(initial_data)
-            return Database._sessions_cache
-        except:
-            return Database._sessions_cache
+        return Database._memory_storage['sessions']
     
     @staticmethod
     def save_sessions(sessions):
-        print(f"DEBUG: Would save {len(sessions)} sessions (file writing disabled)")
+        Database._memory_storage['sessions'] = sessions
         return True
     
     @staticmethod
     def load_otp_storage():
-        try:
-            if os.path.exists(OTP_STORAGE_FILE):
-                with open(OTP_STORAGE_FILE, 'r') as f:
-                    initial_data = json.load(f)
-                    Database._otp_cache.update(initial_data)
-            return Database._otp_cache
-        except:
-            return Database._otp_cache
+        return Database._memory_storage['otp_storage']
     
     @staticmethod
     def save_otp_storage(otp_storage):
-        print(f"DEBUG: Would save OTP data (file writing disabled)")
+        Database._memory_storage['otp_storage'] = otp_storage
         return True
 
 class EmailService:
@@ -760,19 +733,19 @@ def home():
             
             <div class="registration-section">
                 <div class="input-group">
-                    <input type="text" id="userName" placeholder="Your Full Name">
+                    <input type="text" id="userName" placeholder="Your Full Name" autocomplete="name">
                 </div>
                 <div class="input-group">
-                    <input type="email" id="userEmail" placeholder="Your Email Address (Required)" required>
+                    <input type="email" id="userEmail" placeholder="Your Email Address (Required)" required autocmplete="email">
                 </div>
                 <div class="input-group">
-                    <input type="password" id="userPassword" placeholder="Password (Minimum 6 characters)" required>
+                    <input type="password" id="userPassword" placeholder="Password (Minimum 6 characters)" required autocomplete="new-password">
                 </div>
                 <div class="input-group">
-                    <input type="password" id="userConfirmPassword" placeholder="Confirm Password" required>
+                    <input type="password" id="userConfirmPassword" placeholder="Confirm Password" required autocomplete="new-password">
                 </div>
                 <div class="input-group">
-                    <input type="text" id="userPhone" placeholder="Your WhatsApp Number (Required)" required>
+                    <input type="text" id="userPhone" placeholder="Your WhatsApp Number (Required)" required autocomplete="tel">
                 </div>
                 <button class="btn btn-premium" onclick="registerUser()">Create Account & Send OTP</button>
             </div>
@@ -838,7 +811,7 @@ def home():
                     <input type="email" id="loginEmail" placeholder="Your Email Address">
                 </div>
                 <div class="input-group">
-                    <input type="password" id="loginPassword" placeholder="Your Password">
+                    <input type="password" id="loginPassword" placeholder="Your Password" autocomplete="current-password">
                 </div>
                 <button class="btn btn-premium" onclick="loginUser()">Login to Account</button>
             </div>
@@ -1303,6 +1276,11 @@ async function resendVerificationOTP() {
         return;
     }
     
+    // Show loading state
+    const loginBtn = event.target;
+    loginBtn.textContent = 'Logging in...';
+    loginBtn.disabled = true;
+    
     try {
         const response = await fetch('/api/login-user', {
             method: 'POST',
@@ -1314,6 +1292,11 @@ async function resendVerificationOTP() {
         });
         
         const result = await response.json();
+        
+        // RESET BUTTON
+        loginBtn.textContent = 'Login to Account';
+        loginBtn.disabled = false;
+        
         if (result.success) {
             currentSession = result.session_token;
             currentUser = result.user_id;
@@ -1325,7 +1308,7 @@ async function resendVerificationOTP() {
             loadUserStats();
             switchTab('scanner');
             
-            // Show success message
+            // Show SUCCESS message instead of error
             showResult({
                 message: '✅ Login successful! Welcome back.',
                 type: 'safe'
@@ -1340,23 +1323,15 @@ async function resendVerificationOTP() {
                 pendingEmail = email;
                 switchTab('register');
                 document.getElementById('userEmail').value = email;
-                document.getElementById('userEmail').readOnly = true; // Prevent changing email
+                document.getElementById('userEmail').readOnly = true;
                 document.getElementById('otpVerificationSection').style.display = 'block';
                 
-                // Scroll to OTP section
                 document.getElementById('otpVerificationSection').scrollIntoView({ 
                     behavior: 'smooth' 
                 });
                 
-                // Show helpful message
-                showResult({
-                    message: '📧 Please verify your email to continue. OTP section is now available.',
-                    type: 'warning'
-                });
-                
             } else {
-                // Regular login error
-                alert('Error: ' + result.message);
+                // Regular login error - show in result box
                 showResult({
                     message: '❌ ' + result.message,
                     type: 'warning'
@@ -1364,9 +1339,13 @@ async function resendVerificationOTP() {
             }
         }
     } catch (error) {
-        alert('Network error. Please check your connection and try again.');
+        // RESET BUTTON on error too
+        loginBtn.textContent = 'Login to Account';
+        loginBtn.disabled = false;
+        
+        // Show proper error message
         showResult({
-            message: '❌ Network error. Please check your connection.',
+            message: '❌ Network error. Please check your connection and try again.',
             type: 'warning'
         });
     }
@@ -2309,6 +2288,14 @@ def api_admin_verify_user():
         UserManager.verify_user_email(user['id'])
         return jsonify({'success': True, 'message': f'User {user_id} verified'})
     return jsonify({'success': False, 'message': 'User not found'})
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # Return "No Content" instead of 404
+
+@app.route('/favicon.png')  
+def favicon_png():
+    return '', 204
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8001)
