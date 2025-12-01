@@ -262,9 +262,15 @@ class EmailService:
             sender_email = EMAIL_CONFIG['sender_email']
             sender_password = EMAIL_CONFIG['sender_password']
             
+            # Debug logging
+            logger.info(f"📧 Email Config Check:")
+            logger.info(f"   Sender Email: {'SET' if sender_email else 'MISSING'}")
+            logger.info(f"   Sender Password: {'SET' if sender_password else 'MISSING'}")
+            
             if not sender_email or not sender_password:
                 logger.error("❌ Email configuration missing")
-                logger.error(f"Email configured: {bool(sender_email)}, Password configured: {bool(sender_password)}")
+                logger.error(f"   Email: {sender_email}")
+                logger.error(f"   Password: {'Set' if sender_password else 'Missing'}")
                 return False
             
             logger.info(f"📧 Sending OTP to {recipient_email}")
