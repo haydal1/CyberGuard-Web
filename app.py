@@ -3048,6 +3048,73 @@ def health_check():
         'version': '2.0.0'
     })
 
+# =============================================
+# DEBUG ENDPOINTS
+# =============================================
+
+@app.route('/api/debug-mongo', methods=['GET'])
+def debug_mongo():
+    """Debug MongoDB connection with more details"""
+    import urllib.parse
+    
+    mongo_uri = os.environ.get('MONGODB_URI')
+    
+    # Mask password for security
+    masked_uri = "NOT SET"
+    if mongo_uri:
+        if '@' in mongo_uri:
+            parts = mongo_uri.split('@')
+            user_part = parts[0]
+            if ':' in user_part:
+                user_pass = user_part.split(':')
+                masked_uri = user_pass[0] + ':••••••••@' + parts[1]
+        else:
+            masked_uri = mongo_uri
+    
+    try:
+        # Test connection
+        db = Database.get_db()
+        if db:
+            return jsonify({
+                'success': True,
+                'message': 'MongoDB connected',
+                'database': db.name,
+                'collections': db.list_collection_names(),
+                'connection_string_masked': masked_uri,
+                'password_set': bool(os.environ.get('MONGODB_URI')),
+                'environment': 'Vercel' if 'VERCEL' in os.environ else 'Local'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'MongoDB not connected',
+                'connection_string_masked': masked_uri,
+                'password_set': bool(os.environ.get('MONGODB_URI')),
+                'environment': 'Vercel' if 'VERCEL' in os.environ else 'Local'
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'connection_string_masked': masked_uri,
+            'password_set': bool(os.environ.get('MONGODB_URI')),
+            'environment': 'Vercel' if 'VERCEL' in os.environ else 'Local'
+        })
+
+@app.route('/api/test-email', methods=['GET'])
+def test_email():
+    """Test email configuration"""
+    sender_email = EMAIL_CONFIG['sender_email']
+    sender_password = EMAIL_CONFIG['sender_password']
+    
+    return jsonify({
+        'email_configured': bool(sender_email and sender_password),
+        'sender_email_set': bool(sender_email),
+        'sender_password_set': bool(sender_password),
+        'sender_email': sender_email[:3] + '••••••' if sender_email else None
+    })
+
+
 @app.route('/favicon.ico')
 def favicon():
     return '', 204
