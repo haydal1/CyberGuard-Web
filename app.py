@@ -38,14 +38,13 @@ PRICING_PLANS = {
     'monthly': {'price': 3000, 'duration': 30, 'name': 'Monthly Premium'}
 }
 
-import os
-
 EMAIL_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
     'smtp_port': 587,
     'sender_email': os.environ.get('SMTP_EMAIL'),
     'sender_password': os.environ.get('SMTP_PASSWORD')
 }
+
 
 # =============================================
 # ENHANCED DATABASE MANAGER WITH MONGODB
@@ -66,9 +65,13 @@ class Database:
                 
                 Database._client = MongoClient(connection_string)
                 # Extract database name from connection string or use default
-                db_name = connection_string.split('/')[-1].split('?')[0]
+                if '/' in connection_string:
+                    db_name = connection_string.split('/')[-1].split('?')[0]
+                else:
+                    db_name = 'cyberguard'
+                    
                 Database._db = Database._client[db_name]
-                logger.info("✅ Connected to MongoDB via Vercel")
+                logger.info(f"✅ Connected to MongoDB: {db_name}")
                 return Database._db
             except Exception as e:
                 logger.error(f"❌ MongoDB connection failed: {e}")
@@ -78,7 +81,7 @@ class Database:
     @staticmethod
     def get_collection(collection_name):
         db = Database.get_db()
-        if db:
+        if db is not None:
             return db[collection_name]
         return None
     
@@ -86,7 +89,7 @@ class Database:
     def load_users():
         try:
             collection = Database.get_collection('users')
-            if collection:
+            if collection is not None:
                 users = {}
                 for user in collection.find():
                     user_dict = {k: v for k, v in user.items() if k != '_id'}
@@ -102,7 +105,7 @@ class Database:
     def save_users(users):
         try:
             collection = Database.get_collection('users')
-            if collection:
+            if collection is not None:
                 users_list = list(users.values())
                 if users_list:
                     collection.delete_many({})
@@ -120,7 +123,7 @@ class Database:
     def load_payments():
         try:
             collection = Database.get_collection('payments')
-            if collection:
+            if collection is not None:
                 payments = {}
                 for payment in collection.find():
                     payment_dict = {k: v for k, v in payment.items() if k != '_id'}
@@ -135,7 +138,7 @@ class Database:
     def save_payments(payments):
         try:
             collection = Database.get_collection('payments')
-            if collection:
+            if collection is not None:
                 payments_list = list(payments.values())
                 if payments_list:
                     collection.delete_many({})
@@ -151,7 +154,7 @@ class Database:
     def load_sessions():
         try:
             collection = Database.get_collection('sessions')
-            if collection:
+            if collection is not None:
                 sessions = {}
                 for session in collection.find():
                     session_dict = {k: v for k, v in session.items() if k != '_id'}
@@ -166,7 +169,7 @@ class Database:
     def save_sessions(sessions):
         try:
             collection = Database.get_collection('sessions')
-            if collection:
+            if collection is not None:
                 sessions_list = list(sessions.values())
                 if sessions_list:
                     collection.delete_many({})
@@ -182,7 +185,7 @@ class Database:
     def load_otp_storage():
         try:
             collection = Database.get_collection('otp_storage')
-            if collection:
+            if collection is not None:
                 otp_storage = {}
                 for otp in collection.find():
                     otp_dict = {k: v for k, v in otp.items() if k != '_id'}
@@ -197,7 +200,7 @@ class Database:
     def save_otp_storage(otp_storage):
         try:
             collection = Database.get_collection('otp_storage')
-            if collection:
+            if collection is not None:
                 otp_list = list(otp_storage.values())
                 if otp_list:
                     collection.delete_many({})
@@ -209,6 +212,7 @@ class Database:
         Database._otp_cache = otp_storage
         return True
 
+
 # =============================================
 # ENHANCED EMAIL SERVICE
 # =============================================
@@ -218,10 +222,14 @@ class EmailService:
     def send_otp_email(recipient_email, otp_code):
         """Send OTP code to user's email"""
         try:
-            # For demo purposes, we'll just print the OTP
+            # Check if email config is valid
+            if not EMAIL_CONFIG['sender_email'] or not EMAIL_CONFIG['sender_password']:
+                logger.error("❌ Email configuration missing")
+                return False
+            
             logger.info(f"📧 OTP for {recipient_email}: {otp_code}")
             
-            # Real email sending (uncomment when ready)
+            # Create message
             msg = MIMEMultipart()
             msg['From'] = EMAIL_CONFIG['sender_email']
             msg['To'] = recipient_email
@@ -245,6 +253,7 @@ class EmailService:
             
             msg.attach(MIMEText(body, 'html'))
             
+            # Connect to SMTP server
             server = smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'])
             server.starttls()
             server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
@@ -261,6 +270,11 @@ class EmailService:
     def send_password_reset_email(recipient_email, reset_token):
         """Send password reset email"""
         try:
+            # Check if email config is valid
+            if not EMAIL_CONFIG['sender_email'] or not EMAIL_CONFIG['sender_password']:
+                logger.error("❌ Email configuration missing")
+                return False
+            
             reset_link = f"https://cyber-guard-web.vercel.app/#reset-password?token={reset_token}"
             
             msg = MIMEMultipart()
