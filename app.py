@@ -38,12 +38,13 @@ PRICING_PLANS = {
     'monthly': {'price': 3000, 'duration': 30, 'name': 'Monthly Premium'}
 }
 
-# Email configuration for OTP
+import os
+
 EMAIL_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
     'smtp_port': 587,
-    'sender_email': 'aliyuhaydal9@gmail.com',
-    'sender_password': 'ukvxnwmvyfjakmnh'
+    'sender_email': os.environ.get('SMTP_EMAIL'),
+    'sender_password': os.environ.get('SMTP_PASSWORD')
 }
 
 # =============================================
