@@ -3075,7 +3075,7 @@ if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
     logger.info(f"🚀 Starting CyberGuard NG Server on port {port}")
-    logger.info(f"📊 Database: {'MongoDB' if Database.get_db() else 'In-Memory'}")
+    logger.info(f"📊 Database: {'MongoDB' if Database.get_db() is not None else 'In-Memory'}")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
 else:
