@@ -38,13 +38,13 @@ PRICING_PLANS = {
     'monthly': {'price': 3000, 'duration': 30, 'name': 'Monthly Premium'}
 }
 
+# Get email configuration from environment variables
 EMAIL_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
     'smtp_port': 587,
     'sender_email': os.environ.get('SMTP_EMAIL'),
     'sender_password': os.environ.get('SMTP_PASSWORD')
 }
-
 
 # =============================================
 # ENHANCED DATABASE MANAGER WITH MONGODB
@@ -61,17 +61,53 @@ class Database:
                 connection_string = os.environ.get('MONGODB_URI')
                 if not connection_string:
                     logger.warning("❌ MONGODB_URI not found in environment")
+                    # Try alternative environment variable names
+                    connection_string = os.environ.get('MONGODB_URL') or os.environ.get('DATABASE_URL')
+                    
+                if not connection_string:
+                    logger.warning("⚠️ No MongoDB connection string found, using in-memory storage")
                     return None
                 
-                Database._client = MongoClient(connection_string)
-                # Extract database name from connection string or use default
-                if '/' in connection_string:
-                    db_name = connection_string.split('/')[-1].split('?')[0]
-                else:
+                logger.info(f"🔗 Attempting MongoDB connection...")
+                Database._client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+                
+                # Test connection
+                Database._client.admin.command('ping')
+                
+                # Get database name from connection string or use default
+                db_name = 'cyberguard'
+                try:
+                    # Extract database name from MongoDB URI
+                    if 'mongodb.net/' in connection_string:
+                        # MongoDB Atlas format: mongodb.net/cyberguard?retryWrites=true&w=majority
+                        db_part = connection_string.split('mongodb.net/')[1]
+                        if '?' in db_part:
+                            db_name = db_part.split('?')[0]
+                        else:
+                            db_name = db_part
+                    elif 'mongodb://' in connection_string and '@' in connection_string:
+                        # Standard format: mongodb://user:pass@host:port/dbname
+                        db_part = connection_string.split('@')[-1].split('/')
+                        if len(db_part) > 1:
+                            db_name = db_part[1].split('?')[0] if '?' in db_part[1] else db_part[1]
+                except Exception as e:
+                    logger.warning(f"Could not extract DB name from URI, using default: {e}")
                     db_name = 'cyberguard'
-                    
+                
+                # Ensure db_name is not empty
+                if not db_name or db_name == '':
+                    db_name = 'cyberguard'
+                
                 Database._db = Database._client[db_name]
-                logger.info(f"✅ Connected to MongoDB: {db_name}")
+                logger.info(f"✅ Connected to MongoDB database: {db_name}")
+                
+                # Ensure collections exist
+                collections = ['users', 'payments', 'sessions', 'otp_storage']
+                for collection in collections:
+                    if collection not in Database._db.list_collection_names():
+                        Database._db.create_collection(collection)
+                        logger.info(f"Created collection: {collection}")
+                
                 return Database._db
             except Exception as e:
                 logger.error(f"❌ MongoDB connection failed: {e}")
@@ -223,15 +259,19 @@ class EmailService:
         """Send OTP code to user's email"""
         try:
             # Check if email config is valid
-            if not EMAIL_CONFIG['sender_email'] or not EMAIL_CONFIG['sender_password']:
+            sender_email = EMAIL_CONFIG['sender_email']
+            sender_password = EMAIL_CONFIG['sender_password']
+            
+            if not sender_email or not sender_password:
                 logger.error("❌ Email configuration missing")
+                logger.error(f"Email configured: {bool(sender_email)}, Password configured: {bool(sender_password)}")
                 return False
             
-            logger.info(f"📧 OTP for {recipient_email}: {otp_code}")
+            logger.info(f"📧 Sending OTP to {recipient_email}")
             
             # Create message
             msg = MIMEMultipart()
-            msg['From'] = EMAIL_CONFIG['sender_email']
+            msg['From'] = sender_email
             msg['To'] = recipient_email
             msg['Subject'] = "CyberGuard NG - Email Verification OTP"
             
@@ -256,14 +296,14 @@ class EmailService:
             # Connect to SMTP server
             server = smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'])
             server.starttls()
-            server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
+            server.login(sender_email, sender_password)
             server.send_message(msg)
             server.quit()
             
             logger.info(f"✅ OTP email sent to {recipient_email}")
             return True
         except Exception as e:
-            logger.error(f"❌ Email error: {e}")
+            logger.error(f"❌ Email error: {str(e)}")
             return False
 
     @staticmethod
@@ -271,14 +311,17 @@ class EmailService:
         """Send password reset email"""
         try:
             # Check if email config is valid
-            if not EMAIL_CONFIG['sender_email'] or not EMAIL_CONFIG['sender_password']:
+            sender_email = EMAIL_CONFIG['sender_email']
+            sender_password = EMAIL_CONFIG['sender_password']
+            
+            if not sender_email or not sender_password:
                 logger.error("❌ Email configuration missing")
                 return False
             
             reset_link = f"https://cyber-guard-web.vercel.app/#reset-password?token={reset_token}"
             
             msg = MIMEMultipart()
-            msg['From'] = EMAIL_CONFIG['sender_email']
+            msg['From'] = sender_email
             msg['To'] = recipient_email
             msg['Subject'] = "CyberGuard NG - Password Reset Request"
             
@@ -304,7 +347,7 @@ class EmailService:
             
             server = smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'])
             server.starttls()
-            server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
+            server.login(sender_email, sender_password)
             server.send_message(msg)
             server.quit()
             
@@ -1048,13 +1091,6 @@ def home():
                 <p>Enter any Nigerian phone number, website URL, or business name to check for fraud risks</p>
                 
                 <div class="section">
-                    <div class="input-group">
-                        <input type="text" id="searchInput" placeholder="Enter URL to scan...">
-                        <button class="btn btn-premium" onclick="scanURL()">Scan URL for Fraud</button>
-                    </div>
-                </div>
-
-                <div class="section">
                     <h3>Check USSD Code Safety</h3>
                     <div class="input-group">
                         <input type="text" id="ussdInput" placeholder="Enter USSD code e.g. *901#" value="*901#">
@@ -1564,65 +1600,6 @@ def home():
         // =============================================
         // SCANNER FUNCTIONS
         // =============================================
-
-        async function scanURL() {
-            if (!currentUser) {
-                alert('Please login first');
-                switchTab('login');
-                return;
-            }
-            
-            const url = document.getElementById('searchInput').value.trim();
-            if (!url) {
-                showResult({
-                    message: '❌ Please enter a URL to scan',
-                    type: 'warning'
-                });
-                return;
-            }
-            
-            try {
-                // Show loading state
-                showResult({
-                    message: '🔍 Scanning URL for Nigerian fraud patterns...',
-                    type: 'warning'
-                });
-                
-                const response = await fetch('/api/scan-url', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        url: url,
-                        user_id: currentUser 
-                    })
-                });
-                
-                const result = await response.json();
-                
-                // Handle email verification requirement
-                if (result.needs_verification) {
-                    alert('📧 ' + result.message);
-                    switchTab('register');
-                    return;
-                }
-                
-                if (result.success === false) {
-                    showResult({
-                        message: '❌ ' + result.message,
-                        type: 'warning'
-                    });
-                    return;
-                }
-                
-                showResult(result);
-                loadUserStats();
-            } catch (error) {
-                showResult({
-                    message: '❌ Network error. Please try again.',
-                    type: 'warning'
-                });
-            }
-        }
 
         async function checkUSSD() {
             if (!currentUser) {
@@ -2367,378 +2344,6 @@ def home():
 # SCANNER API ENDPOINTS
 # =============================================
 
-@app.route('/api/scan-url', methods=['POST'])
-def api_scan_url():
-    try:
-        data = request.get_json()
-        url = data.get('url', '').strip()
-        user_id = data.get('user_id')
-        
-        if not user_id:
-            return jsonify({'success': False, 'message': 'User ID is required'})
-        
-        user = UserManager.get_user(user_id)
-        if not user:
-            return jsonify({'success': False, 'message': 'User not found'})
-        
-        # Enforce email verification
-        if not user.get('is_verified', False):
-            return jsonify({
-                'success': False,
-                'message': '❌ Please verify your email first to use security scanner.',
-                'type': 'warning',
-                'needs_verification': True
-            })
-        
-        # Check free limit
-        if not user['is_premium'] and not UserManager.can_make_free_check(user):
-            return jsonify({
-                'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited scans.',
-                'type': 'warning',
-                'limit_reached': True
-            })
-        
-        UserManager.record_check(user)
-        
-        # Use simple scanner
-        result = scanner.scan_url(url)
-        return jsonify({
-            'success': True,
-            'message': result['message'],
-            'type': result['type']
-        })
-        
-    except Exception as e:
-        logger.error(f"URL scan error: {e}")
-        return jsonify({'success': False, 'message': 'Server error during URL scan'})
-
-# =============================================
-# AUTHENTICATION API ENDPOINTS
-# =============================================
-
-@app.route('/api/register-user', methods=['POST'])
-def api_register_user():
-    try:
-        data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        password = data.get('password')
-        phone_number = data.get('phone_number', '').strip()
-        name = data.get('name', '').strip()
-        
-        if not email or not password or not phone_number:
-            return jsonify({'success': False, 'message': 'Email, password and phone number are required'})
-        
-        if len(password) < 6:
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'})
-        
-        if not re.match(r'^0[7-9][0-9]{9}$', phone_number):
-            return jsonify({'success': False, 'message': 'Please enter a valid Nigerian phone number'})
-        
-        # Create user
-        user, error = UserManager.create_user(email, password, phone_number, name)
-        if error:
-            return jsonify({'success': False, 'message': error})
-        
-        # Generate and send OTP
-        if OTPManager.generate_and_send_otp(email):
-            return jsonify({
-                'success': True,
-                'message': 'Registration successful! OTP sent to your email.',
-                'user_id': user['id']
-            })
-        else:
-            return jsonify({
-                'success': True,
-                'message': 'Registration successful! But failed to send OTP. Please use "Verify Email" tab to request a new OTP.'
-            })
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
-        return jsonify({'success': False, 'message': 'Server error during registration'})
-
-@app.route('/api/verify-otp', methods=['POST'])
-def api_verify_otp():
-    try:
-        data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        otp_code = data.get('otp_code')
-        
-        if not email or not otp_code:
-            return jsonify({'success': False, 'message': 'Email and OTP code are required'})
-        
-        # Verify OTP
-        if OTPManager.verify_otp(email, otp_code):
-            # Find user by email and mark as verified
-            user = UserManager.get_user_by_email(email)
-            if user:
-                UserManager.verify_user_email(user['id'])
-                
-                # Create session after verification
-                session_token = AuthManager.create_session(user['id'])
-                
-                return jsonify({
-                    'success': True,
-                    'message': 'Email verified successfully!',
-                    'user_id': user['id'],
-                    'session_token': session_token
-                })
-            else:
-                return jsonify({'success': False, 'message': 'User not found'})
-        else:
-            return jsonify({'success': False, 'message': 'Invalid or expired OTP code'})
-    except Exception as e:
-        logger.error(f"OTP verification error: {e}")
-        return jsonify({'success': False, 'message': 'Server error during OTP verification'})
-
-@app.route('/api/send-verification-otp', methods=['POST'])
-def api_send_verification_otp():
-    try:
-        data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        
-        if not email:
-            return jsonify({'success': False, 'message': 'Email is required'})
-        
-        # Check if user exists
-        user = UserManager.get_user_by_email(email)
-        if not user:
-            return jsonify({'success': False, 'message': 'Email not found. Please register first.'})
-        
-        # Check if already verified
-        if user.get('is_verified', False):
-            return jsonify({'success': False, 'message': 'Email is already verified'})
-        
-        # Generate and send OTP
-        if OTPManager.generate_and_send_otp(email):
-            return jsonify({
-                'success': True,
-                'message': 'OTP sent to your email!'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Failed to send OTP. Please try again.'
-            })
-    except Exception as e:
-        logger.error(f"Send verification OTP error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-@app.route('/api/resend-otp', methods=['POST'])
-def api_resend_otp():
-    try:
-        data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        
-        if not email:
-            return jsonify({'success': False, 'message': 'Email is required'})
-        
-        if OTPManager.generate_and_send_otp(email):
-            return jsonify({'success': True, 'message': 'New OTP sent to your email'})
-        else:
-            return jsonify({'success': False, 'message': 'Failed to send OTP'})
-    except Exception as e:
-        logger.error(f"Resend OTP error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-@app.route('/api/login-user', methods=['POST'])
-def api_login_user():
-    try:
-        data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        password = data.get('password')
-        
-        if not email or not password:
-            return jsonify({'success': False, 'message': 'Email and password are required'})
-        
-        user = UserManager.authenticate_user(email, password)
-        if user:
-            # Check if email is verified
-            if not user.get('is_verified', False):
-                return jsonify({
-                    'success': False, 
-                    'message': 'Please verify your email first. Check your inbox for OTP.',
-                    'needs_verification': True
-                })
-            
-            # Create session only if verified
-            session_token = AuthManager.create_session(user['id'])
-            
-            return jsonify({
-                'success': True,
-                'message': 'Login successful!',
-                'user_id': user['id'],
-                'session_token': session_token
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Invalid email or password'})
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        return jsonify({'success': False, 'message': 'Server error during login'})
-
-@app.route('/api/validate-session', methods=['POST'])
-def api_validate_session():
-    try:
-        data = request.get_json()
-        session_token = data.get('session_token')
-        
-        user_id = AuthManager.validate_session(session_token)
-        if user_id:
-            return jsonify({
-                'success': True,
-                'user_id': user_id
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Invalid or expired session'})
-    except Exception as e:
-        logger.error(f"Session validation error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-@app.route('/api/logout', methods=['POST'])
-def api_logout():
-    try:
-        data = request.get_json()
-        session_token = data.get('session_token')
-        
-        if AuthManager.logout_session(session_token):
-            return jsonify({'success': True, 'message': 'Logged out successfully'})
-        else:
-            return jsonify({'success': False, 'message': 'Logout failed'})
-    except Exception as e:
-        logger.error(f"Logout error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-# =============================================
-# PASSWORD RESET ENDPOINTS
-# =============================================
-
-@app.route('/api/forgot-password', methods=['POST'])
-def api_forgot_password():
-    try:
-        data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        
-        if not email:
-            return jsonify({'success': False, 'message': 'Email is required'})
-        
-        user = UserManager.get_user_by_email(email)
-        if not user:
-            # Don't reveal if email exists for security
-            return jsonify({
-                'success': True, 
-                'message': 'If the email exists, a password reset link has been sent.'
-            })
-        
-        reset_token = UserManager.create_password_reset_token(email)
-        if not reset_token:
-            return jsonify({'success': False, 'message': 'Failed to create reset token'})
-        
-        if EmailService.send_password_reset_email(email, reset_token):
-            return jsonify({
-                'success': True,
-                'message': 'Password reset link sent to your email!'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Failed to send reset email. Please try again.'
-            })
-    except Exception as e:
-        logger.error(f"Forgot password error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-@app.route('/api/reset-password', methods=['POST'])
-def api_reset_password():
-    try:
-        data = request.get_json()
-        token = data.get('token')
-        new_password = data.get('new_password')
-        confirm_password = data.get('confirm_password')
-        
-        if not token or not new_password or not confirm_password:
-            return jsonify({'success': False, 'message': 'All fields are required'})
-        
-        if new_password != confirm_password:
-            return jsonify({'success': False, 'message': 'Passwords do not match'})
-        
-        if len(new_password) < 6:
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'})
-        
-        # Find user by reset token
-        users = UserManager.get_all_users()
-        user_email = None
-        for user in users.values():
-            if 'reset_tokens' in user:
-                for reset_token in user['reset_tokens']:
-                    if (reset_token['token'] == token and 
-                        not reset_token['used'] and 
-                        datetime.now() < datetime.fromisoformat(reset_token['expires_at'])):
-                        user_email = user['email']
-                        break
-            if user_email:
-                break
-        
-        if not user_email:
-            return jsonify({'success': False, 'message': 'Invalid or expired reset token'})
-        
-        # Update password
-        if UserManager.update_password(user_email, new_password):
-            # Mark token as used
-            UserManager.use_reset_token(user_email, token)
-            
-            return jsonify({
-                'success': True,
-                'message': 'Password reset successfully! You can now login with your new password.'
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Failed to reset password'})
-    except Exception as e:
-        logger.error(f"Reset password error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-# =============================================
-# USER MANAGEMENT ENDPOINTS
-# =============================================
-
-@app.route('/api/user-stats', methods=['GET'])
-def api_user_stats():
-    try:
-        user_id = request.args.get('user_id')
-        if not user_id:
-            return jsonify({'success': False, 'message': 'User ID is required'})
-        
-        user = UserManager.get_user(user_id)
-        if not user:
-            return jsonify({'success': False, 'message': 'User not found'})
-        
-        # Check if premium has expired
-        if user['is_premium'] and user.get('premium_until'):
-            premium_until = datetime.strptime(user['premium_until'], '%Y-%m-%d').date() if isinstance(user['premium_until'], str) else user['premium_until']
-            if datetime.now().date() > premium_until:
-                user['is_premium'] = False
-                user['premium_until'] = None
-                user['premium_plan'] = None
-                UserManager.save_user(user)
-        
-        return jsonify({
-            'success': True,
-            'is_premium': user['is_premium'],
-            'premium_until': user.get('premium_until'),
-            'premium_plan': user.get('premium_plan'),
-            'checks_today': user['checks_today'],
-            'total_checks': user['total_checks'],
-            'payment_pending': user.get('payment_pending', False),
-            'phone_number': user.get('phone_number'),
-            'email': user.get('email'),
-            'name': user.get('name'),
-            'is_verified': user.get('is_verified', False)
-        })
-    except Exception as e:
-        logger.error(f"User stats error: {e}")
-        return jsonify({'success': False, 'message': 'Server error'})
-
-# =============================================
-# SCANNER ENDPOINTS
-# =============================================
-
 @app.route('/api/check-ussd', methods=['POST'])
 def api_check_ussd():
     try:
@@ -2912,6 +2517,366 @@ def api_check_sms():
     except Exception as e:
         logger.error(f"SMS check error: {e}")
         return jsonify({'success': False, 'message': 'Server error during SMS check'})
+
+# =============================================
+# AUTHENTICATION API ENDPOINTS
+# =============================================
+
+@app.route('/api/register-user', methods=['POST'])
+def api_register_user():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password')
+        phone_number = data.get('phone_number', '').strip()
+        name = data.get('name', '').strip()
+        
+        if not email or not password or not phone_number:
+            return jsonify({'success': False, 'message': 'Email, password and phone number are required'})
+        
+        if len(password) < 6:
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'})
+        
+        if not re.match(r'^0[7-9][0-9]{9}$', phone_number):
+            return jsonify({'success': False, 'message': 'Please enter a valid Nigerian phone number'})
+        
+        # Create user
+        user, error = UserManager.create_user(email, password, phone_number, name)
+        if error:
+            return jsonify({'success': False, 'message': error})
+        
+        # Generate and send OTP
+        if OTPManager.generate_and_send_otp(email):
+            return jsonify({
+                'success': True,
+                'message': 'Registration successful! OTP sent to your email.',
+                'user_id': user['id']
+            })
+        else:
+            # Check if email configuration is missing
+            sender_email = EMAIL_CONFIG['sender_email']
+            sender_password = EMAIL_CONFIG['sender_password']
+            if not sender_email or not sender_password:
+                logger.error("Email configuration missing - check SMTP_EMAIL and SMTP_PASSWORD environment variables")
+                return jsonify({
+                    'success': False,
+                    'message': 'Email service configuration error. Please contact administrator.'
+                })
+            else:
+                return jsonify({
+                    'success': True,
+                    'message': 'Registration successful! But failed to send OTP. Please use "Verify Email" tab to request a new OTP.'
+                })
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during registration'})
+
+@app.route('/api/verify-otp', methods=['POST'])
+def api_verify_otp():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        otp_code = data.get('otp_code')
+        
+        if not email or not otp_code:
+            return jsonify({'success': False, 'message': 'Email and OTP code are required'})
+        
+        # Verify OTP
+        if OTPManager.verify_otp(email, otp_code):
+            # Find user by email and mark as verified
+            user = UserManager.get_user_by_email(email)
+            if user:
+                UserManager.verify_user_email(user['id'])
+                
+                # Create session after verification
+                session_token = AuthManager.create_session(user['id'])
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Email verified successfully!',
+                    'user_id': user['id'],
+                    'session_token': session_token
+                })
+            else:
+                return jsonify({'success': False, 'message': 'User not found'})
+        else:
+            return jsonify({'success': False, 'message': 'Invalid or expired OTP code'})
+    except Exception as e:
+        logger.error(f"OTP verification error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during OTP verification'})
+
+@app.route('/api/send-verification-otp', methods=['POST'])
+def api_send_verification_otp():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'})
+        
+        # Check if user exists
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            return jsonify({'success': False, 'message': 'Email not found. Please register first.'})
+        
+        # Check if already verified
+        if user.get('is_verified', False):
+            return jsonify({'success': False, 'message': 'Email is already verified'})
+        
+        # Generate and send OTP
+        if OTPManager.generate_and_send_otp(email):
+            return jsonify({
+                'success': True,
+                'message': 'OTP sent to your email!'
+            })
+        else:
+            # Check if email configuration is missing
+            sender_email = EMAIL_CONFIG['sender_email']
+            sender_password = EMAIL_CONFIG['sender_password']
+            if not sender_email or not sender_password:
+                return jsonify({
+                    'success': False,
+                    'message': 'Email service not configured. Please contact administrator.'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to send OTP. Please try again.'
+                })
+    except Exception as e:
+        logger.error(f"Send verification OTP error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/resend-otp', methods=['POST'])
+def api_resend_otp():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'})
+        
+        if OTPManager.generate_and_send_otp(email):
+            return jsonify({'success': True, 'message': 'New OTP sent to your email'})
+        else:
+            # Check if email configuration is missing
+            sender_email = EMAIL_CONFIG['sender_email']
+            sender_password = EMAIL_CONFIG['sender_password']
+            if not sender_email or not sender_password:
+                return jsonify({
+                    'success': False,
+                    'message': 'Email service not configured. Please contact administrator.'
+                })
+            else:
+                return jsonify({'success': False, 'message': 'Failed to send OTP'})
+    except Exception as e:
+        logger.error(f"Resend OTP error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/login-user', methods=['POST'])
+def api_login_user():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password')
+        
+        if not email or not password:
+            return jsonify({'success': False, 'message': 'Email and password are required'})
+        
+        user = UserManager.authenticate_user(email, password)
+        if user:
+            # Check if email is verified
+            if not user.get('is_verified', False):
+                return jsonify({
+                    'success': False, 
+                    'message': 'Please verify your email first. Check your inbox for OTP.',
+                    'needs_verification': True
+                })
+            
+            # Create session only if verified
+            session_token = AuthManager.create_session(user['id'])
+            
+            return jsonify({
+                'success': True,
+                'message': 'Login successful!',
+                'user_id': user['id'],
+                'session_token': session_token
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Invalid email or password'})
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during login'})
+
+@app.route('/api/validate-session', methods=['POST'])
+def api_validate_session():
+    try:
+        data = request.get_json()
+        session_token = data.get('session_token')
+        
+        user_id = AuthManager.validate_session(session_token)
+        if user_id:
+            return jsonify({
+                'success': True,
+                'user_id': user_id
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Invalid or expired session'})
+    except Exception as e:
+        logger.error(f"Session validation error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    try:
+        data = request.get_json()
+        session_token = data.get('session_token')
+        
+        if AuthManager.logout_session(session_token):
+            return jsonify({'success': True, 'message': 'Logged out successfully'})
+        else:
+            return jsonify({'success': False, 'message': 'Logout failed'})
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+# =============================================
+# PASSWORD RESET ENDPOINTS
+# =============================================
+
+@app.route('/api/forgot-password', methods=['POST'])
+def api_forgot_password():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'})
+        
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            # Don't reveal if email exists for security
+            return jsonify({
+                'success': True, 
+                'message': 'If the email exists, a password reset link has been sent.'
+            })
+        
+        reset_token = UserManager.create_password_reset_token(email)
+        if not reset_token:
+            return jsonify({'success': False, 'message': 'Failed to create reset token'})
+        
+        if EmailService.send_password_reset_email(email, reset_token):
+            return jsonify({
+                'success': True,
+                'message': 'Password reset link sent to your email!'
+            })
+        else:
+            # Check if email configuration is missing
+            sender_email = EMAIL_CONFIG['sender_email']
+            sender_password = EMAIL_CONFIG['sender_password']
+            if not sender_email or not sender_password:
+                return jsonify({
+                    'success': False,
+                    'message': 'Email service not configured. Please contact administrator.'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to send reset email. Please try again.'
+                })
+    except Exception as e:
+        logger.error(f"Forgot password error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/reset-password', methods=['POST'])
+def api_reset_password():
+    try:
+        data = request.get_json()
+        token = data.get('token')
+        new_password = data.get('new_password')
+        confirm_password = data.get('confirm_password')
+        
+        if not token or not new_password or not confirm_password:
+            return jsonify({'success': False, 'message': 'All fields are required'})
+        
+        if new_password != confirm_password:
+            return jsonify({'success': False, 'message': 'Passwords do not match'})
+        
+        if len(new_password) < 6:
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'})
+        
+        # Find user by reset token
+        users = UserManager.get_all_users()
+        user_email = None
+        for user in users.values():
+            if 'reset_tokens' in user:
+                for reset_token in user['reset_tokens']:
+                    if (reset_token['token'] == token and 
+                        not reset_token['used'] and 
+                        datetime.now() < datetime.fromisoformat(reset_token['expires_at'])):
+                        user_email = user['email']
+                        break
+            if user_email:
+                break
+        
+        if not user_email:
+            return jsonify({'success': False, 'message': 'Invalid or expired reset token'})
+        
+        # Update password
+        if UserManager.update_password(user_email, new_password):
+            # Mark token as used
+            UserManager.use_reset_token(user_email, token)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Password reset successfully! You can now login with your new password.'
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to reset password'})
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+# =============================================
+# USER MANAGEMENT ENDPOINTS
+# =============================================
+
+@app.route('/api/user-stats', methods=['GET'])
+def api_user_stats():
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User ID is required'})
+        
+        user = UserManager.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Check if premium has expired
+        if user['is_premium'] and user.get('premium_until'):
+            premium_until = datetime.strptime(user['premium_until'], '%Y-%m-%d').date() if isinstance(user['premium_until'], str) else user['premium_until']
+            if datetime.now().date() > premium_until:
+                user['is_premium'] = False
+                user['premium_until'] = None
+                user['premium_plan'] = None
+                UserManager.save_user(user)
+        
+        return jsonify({
+            'success': True,
+            'is_premium': user['is_premium'],
+            'premium_until': user.get('premium_until'),
+            'premium_plan': user.get('premium_plan'),
+            'checks_today': user['checks_today'],
+            'total_checks': user['total_checks'],
+            'payment_pending': user.get('payment_pending', False),
+            'phone_number': user.get('phone_number'),
+            'email': user.get('email'),
+            'name': user.get('name'),
+            'is_verified': user.get('is_verified', False)
+        })
+    except Exception as e:
+        logger.error(f"User stats error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 # =============================================
 # PAYMENT ENDPOINTS
@@ -3091,6 +3056,14 @@ if __name__ == '__main__':
     
     logger.info(f"🚀 Starting CyberGuard NG Server on port {port}")
     logger.info(f"📊 Database: {'MongoDB' if Database.get_db() is not None else 'In-Memory'}")
+    
+    # Test email configuration
+    sender_email = EMAIL_CONFIG['sender_email']
+    sender_password = EMAIL_CONFIG['sender_password']
+    if not sender_email or not sender_password:
+        logger.warning("⚠️ Email configuration missing - check SMTP_EMAIL and SMTP_PASSWORD environment variables")
+    else:
+        logger.info(f"✅ Email service configured")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
 else:
