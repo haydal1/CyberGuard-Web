@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify
-from flask import send_from_directory
 from pymongo import MongoClient
 import os
 import re
@@ -11,11 +10,16 @@ import hashlib
 import secrets
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
 # =============================================
-# YOUR ACTUAL BUSINESS CONFIGURATION
+# BUSINESS CONFIGURATION
 # =============================================
 YOUR_BANK_DETAILS = {
     'bank_name': 'ZenithBank',
@@ -38,25 +42,15 @@ PRICING_PLANS = {
 EMAIL_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
     'smtp_port': 587,
-    'sender_email': 'aliyuhaydal9@gmail.com',  # Change this
-    'sender_password': 'ukvxnwmvyfjakmnh'   # Change this
+    'sender_email': 'aliyuhaydal9@gmail.com',
+    'sender_password': 'ukvxnwmvyfjakmnh'
 }
 
 # =============================================
-# ENHANCED USER AUTHENTICATION SYSTEM
+# ENHANCED DATABASE MANAGER WITH MONGODB
 # =============================================
 
-# File-based database for persistence
-USERS_FILE = 'users.json'
-PAYMENTS_FILE = 'payments.json'
-SESSIONS_FILE = 'sessions.json'
-OTP_STORAGE_FILE = 'otp_storage.json'
-
-from pymongo import MongoClient
-import os
-
 class Database:
-    # MongoDB connection through Vercel
     _client = None
     _db = None
     
@@ -64,163 +58,159 @@ class Database:
     def get_db():
         if Database._db is None:
             try:
-                # Vercel automatically provides MONGODB_URI
                 connection_string = os.environ.get('MONGODB_URI')
                 if not connection_string:
-                    print("❌ MONGODB_URI not found in environment")
+                    logger.warning("❌ MONGODB_URI not found in environment")
                     return None
                 
                 Database._client = MongoClient(connection_string)
-                # Get the database name from connection string or use default
-                Database._db = Database._client.get_database()
-                print("✅ Connected to MongoDB via Vercel")
+                # Extract database name from connection string or use default
+                db_name = connection_string.split('/')[-1].split('?')[0]
+                Database._db = Database._client[db_name]
+                logger.info("✅ Connected to MongoDB via Vercel")
                 return Database._db
             except Exception as e:
-                print(f"❌ MongoDB connection failed: {e}")
+                logger.error(f"❌ MongoDB connection failed: {e}")
                 return None
         return Database._db
     
     @staticmethod
-    def load_users():
+    def get_collection(collection_name):
         db = Database.get_db()
         if db:
-            try:
+            return db[collection_name]
+        return None
+    
+    @staticmethod
+    def load_users():
+        try:
+            collection = Database.get_collection('users')
+            if collection:
                 users = {}
-                # Create users collection if it doesn't exist
-                if 'users' not in db.list_collection_names():
-                    db.create_collection('users')
-                
-                for user in db.users.find():
-                    # Convert MongoDB document to dict and remove _id
+                for user in collection.find():
                     user_dict = {k: v for k, v in user.items() if k != '_id'}
                     users[user_dict['id']] = user_dict
                 return users
-            except Exception as e:
-                print(f"Error loading users from MongoDB: {e}")
-                return {}
-        print("⚠️ Using in-memory fallback for users")
+        except Exception as e:
+            logger.error(f"Error loading users from MongoDB: {e}")
+        
+        logger.warning("⚠️ Using in-memory fallback for users")
         return getattr(Database, '_users_cache', {})
     
     @staticmethod
     def save_users(users):
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('users')
+            if collection:
                 users_list = list(users.values())
                 if users_list:
-                    # Clear and insert fresh data
-                    db.users.delete_many({})
-                    db.users.insert_many(users_list)
-                print(f"✅ Saved {len(users_list)} users to MongoDB")
+                    collection.delete_many({})
+                    collection.insert_many(users_list)
+                logger.info(f"✅ Saved {len(users_list)} users to MongoDB")
                 return True
-            except Exception as e:
-                print(f"Error saving users to MongoDB: {e}")
-                return False
-        print("⚠️ Saving users to in-memory fallback")
+        except Exception as e:
+            logger.error(f"Error saving users to MongoDB: {e}")
+        
+        logger.warning("⚠️ Saving users to in-memory fallback")
         Database._users_cache = users
         return True
     
     @staticmethod
     def load_payments():
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('payments')
+            if collection:
                 payments = {}
-                if 'payments' not in db.list_collection_names():
-                    db.create_collection('payments')
-                
-                for payment in db.payments.find():
+                for payment in collection.find():
                     payment_dict = {k: v for k, v in payment.items() if k != '_id'}
                     payments[payment_dict['id']] = payment_dict
                 return payments
-            except Exception as e:
-                print(f"Error loading payments from MongoDB: {e}")
-                return {}
+        except Exception as e:
+            logger.error(f"Error loading payments from MongoDB: {e}")
+        
         return getattr(Database, '_payments_cache', {})
     
     @staticmethod
     def save_payments(payments):
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('payments')
+            if collection:
                 payments_list = list(payments.values())
                 if payments_list:
-                    db.payments.delete_many({})
-                    db.payments.insert_many(payments_list)
+                    collection.delete_many({})
+                    collection.insert_many(payments_list)
                 return True
-            except Exception as e:
-                print(f"Error saving payments to MongoDB: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"Error saving payments to MongoDB: {e}")
+        
         Database._payments_cache = payments
         return True
     
     @staticmethod
     def load_sessions():
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('sessions')
+            if collection:
                 sessions = {}
-                if 'sessions' not in db.list_collection_names():
-                    db.create_collection('sessions')
-                
-                for session in db.sessions.find():
+                for session in collection.find():
                     session_dict = {k: v for k, v in session.items() if k != '_id'}
                     sessions[session_dict.get('session_token')] = session_dict
                 return sessions
-            except Exception as e:
-                print(f"Error loading sessions from MongoDB: {e}")
-                return {}
+        except Exception as e:
+            logger.error(f"Error loading sessions from MongoDB: {e}")
+        
         return getattr(Database, '_sessions_cache', {})
     
     @staticmethod
     def save_sessions(sessions):
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('sessions')
+            if collection:
                 sessions_list = list(sessions.values())
                 if sessions_list:
-                    db.sessions.delete_many({})
-                    db.sessions.insert_many(sessions_list)
+                    collection.delete_many({})
+                    collection.insert_many(sessions_list)
                 return True
-            except Exception as e:
-                print(f"Error saving sessions to MongoDB: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"Error saving sessions to MongoDB: {e}")
+        
         Database._sessions_cache = sessions
         return True
     
     @staticmethod
     def load_otp_storage():
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('otp_storage')
+            if collection:
                 otp_storage = {}
-                if 'otp_storage' not in db.list_collection_names():
-                    db.create_collection('otp_storage')
-                
-                for otp in db.otp_storage.find():
+                for otp in collection.find():
                     otp_dict = {k: v for k, v in otp.items() if k != '_id'}
                     otp_storage[otp_dict.get('email')] = otp_dict
                 return otp_storage
-            except Exception as e:
-                print(f"Error loading OTP storage from MongoDB: {e}")
-                return {}
+        except Exception as e:
+            logger.error(f"Error loading OTP storage from MongoDB: {e}")
+        
         return getattr(Database, '_otp_cache', {})
     
     @staticmethod
     def save_otp_storage(otp_storage):
-        db = Database.get_db()
-        if db:
-            try:
+        try:
+            collection = Database.get_collection('otp_storage')
+            if collection:
                 otp_list = list(otp_storage.values())
                 if otp_list:
-                    db.otp_storage.delete_many({})
-                    db.otp_storage.insert_many(otp_list)
+                    collection.delete_many({})
+                    collection.insert_many(otp_list)
                 return True
-            except Exception as e:
-                print(f"Error saving OTP storage to MongoDB: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"Error saving OTP storage to MongoDB: {e}")
+        
         Database._otp_cache = otp_storage
         return True
+
+# =============================================
+# ENHANCED EMAIL SERVICE
+# =============================================
 
 class EmailService:
     @staticmethod
@@ -228,21 +218,31 @@ class EmailService:
         """Send OTP code to user's email"""
         try:
             # For demo purposes, we'll just print the OTP
-            print(f"📧 OTP for {recipient_email}: {otp_code}")
+            logger.info(f"📧 OTP for {recipient_email}: {otp_code}")
             
-            # Uncomment for real email sending:
-            msg = MIMEMultipart()  # FIXED: MimeMultipart → MIMEMultipart
+            # Real email sending (uncomment when ready)
+            msg = MIMEMultipart()
             msg['From'] = EMAIL_CONFIG['sender_email']
             msg['To'] = recipient_email
             msg['Subject'] = "CyberGuard NG - Email Verification OTP"
             
-            body = f"""<h2>CyberGuard NG Email Verification</h2>
-            <p>Your OTP code is: <strong>{otp_code}</strong></p>
-            <p>This code will expire in 10 minutes.</p>
-            <br>
-            <p>Best regards,<br>CyberGuard NG Team</p>"""
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <h2 style="color: #0056b3;">🛡️ CyberGuard NG Email Verification</h2>
+                <p>Your OTP verification code is:</p>
+                <h1 style="background: #f8f9fa; padding: 20px; text-align: center; font-size: 32px; letter-spacing: 5px; border-radius: 8px;">
+                    {otp_code}
+                </h1>
+                <p>This code will expire in 10 minutes.</p>
+                <p><em>If you didn't request this code, please ignore this email.</em></p>
+                <hr>
+                <p>Best regards,<br><strong>CyberGuard NG Team</strong></p>
+            </body>
+            </html>
+            """
             
-            msg.attach(MIMEText(body, 'html'))  # FIXED: MimeText → MIMEText
+            msg.attach(MIMEText(body, 'html'))
             
             server = smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'])
             server.starttls()
@@ -250,10 +250,58 @@ class EmailService:
             server.send_message(msg)
             server.quit()
             
+            logger.info(f"✅ OTP email sent to {recipient_email}")
             return True
         except Exception as e:
-            print(f"Email error: {e}")
+            logger.error(f"❌ Email error: {e}")
             return False
+
+    @staticmethod
+    def send_password_reset_email(recipient_email, reset_token):
+        """Send password reset email"""
+        try:
+            reset_link = f"https://cyber-guard-web.vercel.app/#reset-password?token={reset_token}"
+            
+            msg = MIMEMultipart()
+            msg['From'] = EMAIL_CONFIG['sender_email']
+            msg['To'] = recipient_email
+            msg['Subject'] = "CyberGuard NG - Password Reset Request"
+            
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+                <h2 style="color: #0056b3;">🛡️ CyberGuard NG Password Reset</h2>
+                <p>You requested to reset your password. Click the link below to create a new password:</p>
+                <p style="text-align: center; margin: 30px 0;">
+                    <a href="{reset_link}" style="background: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+                        Reset Your Password
+                    </a>
+                </p>
+                <p>This link will expire in 1 hour.</p>
+                <p><em>If you didn't request this reset, please ignore this email.</em></p>
+                <hr>
+                <p>Best regards,<br><strong>CyberGuard NG Team</strong></p>
+            </body>
+            </html>
+            """
+            
+            msg.attach(MIMEText(body, 'html'))
+            
+            server = smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'])
+            server.starttls()
+            server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
+            server.send_message(msg)
+            server.quit()
+            
+            logger.info(f"✅ Password reset email sent to {recipient_email}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Password reset email error: {e}")
+            return False
+
+# =============================================
+# ENHANCED AUTHENTICATION MANAGER
+# =============================================
 
 class AuthManager:
     @staticmethod
@@ -273,13 +321,18 @@ class AuthManager:
         return secrets.token_hex(32)
     
     @staticmethod
+    def generate_reset_token():
+        return secrets.token_urlsafe(32)
+    
+    @staticmethod
     def create_session(user_id):
         sessions = Database.load_sessions()
         session_token = AuthManager.generate_session_token()
         
         session_data = {
+            'session_token': session_token,
             'user_id': user_id,
-            'ip_address': request.remote_addr,  # SECURITY ENHANCEMENT
+            'ip_address': request.remote_addr,
             'user_agent': request.headers.get('User-Agent', ''),
             'created_at': datetime.now().isoformat(),
             'expires_at': (datetime.now() + timedelta(days=30)).isoformat(),
@@ -297,28 +350,23 @@ class AuthManager:
             session_data = sessions[session_token]
             expires_at = datetime.fromisoformat(session_data['expires_at'])
             
-            # SECURITY ENHANCEMENTS:
-            # 1. Check if session expired
             if datetime.now() > expires_at:
                 del sessions[session_token]
                 Database.save_sessions(sessions)
                 return None
             
-            # 2. Check IP address (prevent session hijacking)
             if session_data.get('ip_address') != request.remote_addr:
-                # IP changed - security risk, invalidate session
                 del sessions[session_token]
                 Database.save_sessions(sessions)
                 return None
             
-            # 3. Update last accessed time
             session_data['last_accessed'] = datetime.now().isoformat()
             sessions[session_token] = session_data
             Database.save_sessions(sessions)
             
             return session_data['user_id']
         return None
-    
+
     @staticmethod
     def logout_session(session_token):
         sessions = Database.load_sessions()
@@ -327,33 +375,10 @@ class AuthManager:
             Database.save_sessions(sessions)
             return True
         return False
-    
-    @staticmethod
-    def cleanup_expired_sessions():
-        """Clean up expired sessions (run periodically)"""
-        sessions = Database.load_sessions()
-        current_time = datetime.now()
-        expired_count = 0
-        
-        for session_token, session_data in list(sessions.items()):
-            expires_at = datetime.fromisoformat(session_data['expires_at'])
-            if current_time > expires_at:
-                del sessions[session_token]
-                expired_count += 1
-        
-        if expired_count > 0:
-            Database.save_sessions(sessions)
-            print(f"🧹 Cleaned up {expired_count} expired sessions")
-        
-        return expired_count
-    
-    @staticmethod
-    def get_session_info(session_token):
-        """Get session information for admin/debug purposes"""
-        sessions = Database.load_sessions()
-        if session_token in sessions:
-            return sessions[session_token]
-        return None
+
+# =============================================
+# ENHANCED USER MANAGER
+# =============================================
 
 class UserManager:
     @staticmethod
@@ -381,53 +406,61 @@ class UserManager:
             'total_checks': 0,
             'payment_pending': False,
             'created_at': datetime.now().isoformat(),
-            'last_login': datetime.now().isoformat()
+            'last_login': datetime.now().isoformat(),
+            'reset_tokens': []  # Store reset tokens for security
         }
         
         users[user_id] = user_data
-        Database.save_users(users)
-        return user_data, None
-    
+        if Database.save_users(users):
+            return user_data, None
+        return None, "Failed to save user"
+
     @staticmethod
     def authenticate_user(email, password):
         users = Database.load_users()
         for user in users.values():
             if user.get('email') == email and AuthManager.verify_password(password, user['password_hash']):
-                # Update last login
                 user['last_login'] = datetime.now().isoformat()
                 users[user['id']] = user
+                Database.save_users(users)
                 return user
         return None
-    
+
     @staticmethod
     def get_user(user_id):
         users = Database.load_users()
         if user_id in users:
-            # Update last active
             users[user_id]['last_active'] = datetime.now().isoformat()
             Database.save_users(users)
             return users[user_id]
         return None
-    
+
+    @staticmethod
+    def get_user_by_email(email):
+        users = Database.load_users()
+        for user in users.values():
+            if user.get('email') == email:
+                return user
+        return None
+
     @staticmethod
     def verify_user_email(user_id):
         users = Database.load_users()
         if user_id in users:
             users[user_id]['is_verified'] = True
-            Database.save_users(users)
-            return True
+            return Database.save_users(users)
         return False
-    
+
     @staticmethod
     def save_user(user):
         users = Database.load_users()
         users[user['id']] = user
-        Database.save_users(users)
-    
+        return Database.save_users(users)
+
     @staticmethod
     def get_all_users():
         return Database.load_users()
-    
+
     @staticmethod
     def can_make_free_check(user):
         if not user:
@@ -438,7 +471,6 @@ class UserManager:
             user['checks_today'] = 0
             user['last_check_date'] = today
         
-        # Premium users have unlimited checks
         if user['is_premium'] and user.get('premium_until'):
             premium_until = datetime.strptime(user['premium_until'], '%Y-%m-%d').date() if isinstance(user['premium_until'], str) else user['premium_until']
             if datetime.now().date() > premium_until:
@@ -449,14 +481,14 @@ class UserManager:
                 return True
         
         return user['checks_today'] < 5
-    
+
     @staticmethod
     def record_check(user):
         user['checks_today'] += 1
         user['total_checks'] += 1
         user['last_check_date'] = str(datetime.now().date())
         UserManager.save_user(user)
-    
+
     @staticmethod
     def activate_premium(user, plan_type):
         user['is_premium'] = True
@@ -466,6 +498,77 @@ class UserManager:
         user['payment_pending'] = False
         UserManager.save_user(user)
         return user
+
+    @staticmethod
+    def create_password_reset_token(email):
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            return None
+        
+        reset_token = AuthManager.generate_reset_token()
+        token_data = {
+            'token': reset_token,
+            'created_at': datetime.now().isoformat(),
+            'expires_at': (datetime.now() + timedelta(hours=1)).isoformat(),
+            'used': False
+        }
+        
+        if 'reset_tokens' not in user:
+            user['reset_tokens'] = []
+        
+        # Remove expired tokens
+        user['reset_tokens'] = [
+            token for token in user.get('reset_tokens', [])
+            if datetime.now() < datetime.fromisoformat(token['expires_at']) and not token['used']
+        ]
+        
+        user['reset_tokens'].append(token_data)
+        UserManager.save_user(user)
+        
+        return reset_token
+
+    @staticmethod
+    def validate_reset_token(email, token):
+        user = UserManager.get_user_by_email(email)
+        if not user or 'reset_tokens' not in user:
+            return False
+        
+        for token_data in user['reset_tokens']:
+            if (token_data['token'] == token and 
+                not token_data['used'] and 
+                datetime.now() < datetime.fromisoformat(token_data['expires_at'])):
+                return True
+        
+        return False
+
+    @staticmethod
+    def use_reset_token(email, token):
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            return False
+        
+        for token_data in user['reset_tokens']:
+            if token_data['token'] == token:
+                token_data['used'] = True
+                token_data['used_at'] = datetime.now().isoformat()
+                return UserManager.save_user(user)
+        
+        return False
+
+    @staticmethod
+    def update_password(email, new_password):
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            return False
+        
+        user['password_hash'] = AuthManager.hash_password(new_password)
+        # Clear all reset tokens after password change
+        user['reset_tokens'] = []
+        return UserManager.save_user(user)
+
+# =============================================
+# OTP MANAGER
+# =============================================
 
 class OTPManager:
     @staticmethod
@@ -484,7 +587,6 @@ class OTPManager:
         otp_storage[email] = otp_data
         Database.save_otp_storage(otp_storage)
         
-        # Send OTP via email
         return EmailService.send_otp_email(email, otp_code)
     
     @staticmethod
@@ -508,11 +610,15 @@ class OTPManager:
             return otp_storage[email].get('verified', False)
         return False
 
+# =============================================
+# PAYMENT MANAGER
+# =============================================
+
 class PaymentManager:
     @staticmethod
     def create_payment(user_id, plan_type, phone_number, name=None):
         payments = Database.load_payments()
-        payment_id = f"pay_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        payment_id = f"pay_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000,9999)}"
         
         payment = {
             'id': payment_id,
@@ -527,17 +633,17 @@ class PaymentManager:
         }
         
         payments[payment_id] = payment
-        Database.save_payments(payments)
-        
-        # Update user to show payment pending
-        user = UserManager.get_user(user_id)
-        if user:
-            user['payment_pending'] = True
-            if name and not user.get('name'):
-                user['name'] = name
-            UserManager.save_user(user)
-        
-        return payment
+        if Database.save_payments(payments):
+            # Update user to show payment pending
+            user = UserManager.get_user(user_id)
+            if user:
+                user['payment_pending'] = True
+                if name and not user.get('name'):
+                    user['name'] = name
+                UserManager.save_user(user)
+            
+            return payment
+        return None
     
     @staticmethod
     def get_payment(payment_id):
@@ -549,29 +655,96 @@ class PaymentManager:
         payments = Database.load_payments()
         if payment_id in payments:
             payments[payment_id].update(updates)
-            Database.save_payments(payments)
-            return True
+            return Database.save_payments(payments)
         return False
     
     @staticmethod
     def get_all_payments():
         return Database.load_payments()
 
-# Initialize databases
-for file in [USERS_FILE, PAYMENTS_FILE, SESSIONS_FILE, OTP_STORAGE_FILE]:
-    if not os.path.exists(file):
-        if file == USERS_FILE:
-            Database.save_users({})
-        elif file == PAYMENTS_FILE:
-            Database.save_payments({})
-        elif file == SESSIONS_FILE:
-            Database.save_sessions({})
-        elif file == OTP_STORAGE_FILE:
-            Database.save_otp_storage({})
+# =============================================
+# SIMPLE SCANNER CLASS
+# =============================================
+
+class SimpleScanner:
+    def __init__(self):
+        self.known_scam_domains = {
+            'tcnnationalizeuze.site', 'gtbank-verify.tk', 
+            'nigerianlottery.com', 'zenithbank-update.xyz',
+            'profitize.site', 'moneytized.online'
+        }
+        
+        self.legitimate_domains = {
+            'zenithbank.com', 'facebook.com', 'google.com',
+            'gtbank.com', 'firstbanknigeria.com', 'accessbankplc.com'
+        }
+
+    def scan_url(self, url):
+        """Simple URL scanner without complex fraud detection"""
+        try:
+            # Normalize URL
+            normalized_url = url.lower().strip()
+            if not normalized_url.startswith(('http://', 'https://')):
+                normalized_url = 'http://' + normalized_url
+            
+            # Extract domain
+            domain = self.extract_domain(normalized_url)
+            
+            # Check against known lists
+            if domain in self.known_scam_domains:
+                return {
+                    'message': '🚨 HIGH RISK - Known scam domain',
+                    'type': 'scam'
+                }
+            
+            if domain in self.legitimate_domains:
+                return {
+                    'message': '✅ SAFE - Legitimate website',
+                    'type': 'safe'
+                }
+            
+            # Basic pattern checks
+            suspicious_tlds = ['.tk', '.ml', '.ga', '.cf', '.xyz', '.top', '.club', '.site', '.online']
+            if any(domain.endswith(tld) for tld in suspicious_tlds):
+                return {
+                    'message': '⚠️ WARNING - Suspicious domain characteristics',
+                    'type': 'warning'
+                }
+            
+            return {
+                'message': '✅ Likely safe - No major issues detected',
+                'type': 'safe'
+            }
+                
+        except Exception as e:
+            logger.error(f"Error scanning URL: {e}")
+            return {
+                'message': '❌ Scan failed - Please try again',
+                'type': 'error'
+            }
+
+    def extract_domain(self, url):
+        """Extract domain from URL"""
+        try:
+            # Remove protocol and path
+            domain = url.split('//')[-1].split('/')[0]
+            # Remove www prefix
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        except:
+            return url
+
+# Initialize scanner
+scanner = SimpleScanner()
+
+# =============================================
+# FLASK ROUTES
+# =============================================
 
 @app.route('/')
 def home():
-    return r'''
+    return '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -582,7 +755,7 @@ def home():
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Arial, sans-serif; 
-            background: linear-gradient(135deg, \#667eea 0%, \#764ba2 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -599,6 +772,7 @@ def home():
             color: white;
             padding: 30px;
             text-align: center;
+            position: relative;
         }
         .premium-badge {
             background: linear-gradient(135deg, #FFD700, #FFA500);
@@ -613,6 +787,7 @@ def home():
             display: flex;
             background: #f8f9fa;
             border-bottom: 1px solid #dee2e6;
+            flex-wrap: wrap;
         }
         .tab {
             flex: 1;
@@ -621,8 +796,12 @@ def home():
             background: none;
             border: none;
             cursor: pointer;
-            font-size: 16px;
-            transition: background 0.3s;
+            font-size: 14px;
+            transition: all 0.3s;
+            min-width: 120px;
+        }
+        .tab:hover {
+            background: #e9ecef;
         }
         .tab.active {
             background: white;
@@ -632,6 +811,7 @@ def home():
         .tab-content {
             display: none;
             padding: 30px;
+            min-height: 400px;
         }
         .tab-content.active {
             display: block;
@@ -669,6 +849,7 @@ def home():
         }
         .btn:hover {
             transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
         }
         .btn-premium {
             background: linear-gradient(135deg, #FFD700, #FFA500);
@@ -696,6 +877,7 @@ def home():
         .safe { background: #d4edda; color: #155724; border: 2px solid #c3e6cb; }
         .scam { background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }
         .warning { background: #fff3cd; color: #856404; border: 2px solid #ffeaa7; }
+        .error { background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }
         .premium-feature { 
             background: linear-gradient(135deg, #fff8e1, #ffecb3);
             border: 2px dashed #ffa000;
@@ -707,6 +889,7 @@ def home():
             display: flex;
             gap: 20px;
             margin: 20px 0;
+            flex-wrap: wrap;
         }
         .pricing-card {
             flex: 1;
@@ -715,6 +898,7 @@ def home():
             padding: 20px;
             text-align: center;
             transition: transform 0.3s;
+            min-width: 250px;
         }
         .pricing-card:hover {
             transform: translateY(-5px);
@@ -781,12 +965,31 @@ def home():
             padding: 10px 15px;
             border-radius: 20px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: none;
+        }
+        .forgot-password {
+            text-align: center;
+            margin-top: 15px;
+        }
+        .forgot-password a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .forgot-password a:hover {
+            text-decoration: underline;
         }
         
         @media (max-width: 768px) {
             .pricing-cards { flex-direction: column; }
             .tabs { flex-direction: column; }
-            .user-menu { position: relative; top: 0; right: 0; margin: 10px; }
+            .user-menu { 
+                position: relative; 
+                top: 0; 
+                right: 0; 
+                margin: 10px; 
+                text-align: center;
+            }
+            .tab { min-width: 100%; }
         }
     </style>
 </head>
@@ -795,22 +998,22 @@ def home():
         <div class="header">
             <h1>🛡️ CyberGuard NG <span class="premium-badge">PREMIUM</span></h1>
             <p>Advanced Nigerian Fraud Protection with Premium Features</p>
-        </div>
-        
-        <div id="userMenu" class="user-menu" style="display: none;">
-            <span id="userGreeting"></span>
-            <button class="btn" onclick="logout()" style="padding: 5px 10px; margin-left: 10px; width: auto;">Logout</button>
+            
+            <div id="userMenu" class="user-menu">
+                <span id="userGreeting"></span>
+                <button class="btn" onclick="logout()" style="padding: 5px 10px; margin-left: 10px; width: auto;">Logout</button>
+            </div>
         </div>
         
         <div class="tabs">
-    <button class="tab active" onclick="switchTab('scanner', event)">Security Scanner</button>
-    <button class="tab" onclick="switchTab('register', event)">Register</button>
-    <button class="tab" onclick="switchTab('verify', event)">Verify Email</button>
-    <button class="tab" onclick="switchTab('login', event)">Login</button>
-    <button class="tab" onclick="switchTab('premium', event)">Go Premium</button>
-    <button class="tab" onclick="switchTab('account', event)">My Account</button>
-    <button class="tab" onclick="switchTab('admin', event)">Admin</button>
-</div>
+            <button class="tab active" onclick="switchTab('scanner', event)">Security Scanner</button>
+            <button class="tab" onclick="switchTab('register', event)">Register</button>
+            <button class="tab" onclick="switchTab('verify', event)">Verify Email</button>
+            <button class="tab" onclick="switchTab('login', event)">Login</button>
+            <button class="tab" onclick="switchTab('premium', event)">Go Premium</button>
+            <button class="tab" onclick="switchTab('account', event)">My Account</button>
+            <button class="tab" onclick="switchTab('admin', event)">Admin</button>
+        </div>
         
         <!-- SCANNER TAB -->
         <div id="scanner-content" class="tab-content active">
@@ -826,57 +1029,61 @@ def home():
             </div>
             
             <div id="scannerContent" style="display: none;">
+                <h2>🔍 Security Scanner</h2>
+                <p>Enter any Nigerian phone number, website URL, or business name to check for fraud risks</p>
+                
                 <div class="section">
-                    <div class="section-title">Check USSD Code Safety</div>
                     <div class="input-group">
-                        <input type="text" id="ussdInput" placeholder="Enter USSD code e.g. *901# or *123*password*#" value="*901#">
+                        <input type="text" id="searchInput" placeholder="Enter URL to scan...">
+                        <button class="btn btn-premium" onclick="scanURL()">Scan URL for Fraud</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Check USSD Code Safety</h3>
+                    <div class="input-group">
+                        <input type="text" id="ussdInput" placeholder="Enter USSD code e.g. *901#" value="*901#">
                     </div>
                     <button class="btn" onclick="checkUSSD()">🔍 Check USSD Safety</button>
                 </div>
                 
                 <div class="section">
-                    <div class="section-title">Scan SMS for Scams</div>
+                    <h3>Scan SMS for Scams</h3>
                     <div class="input-group">
                         <textarea id="smsInput" placeholder="Paste suspicious SMS message here...">Congratulations! You have won 5,000,000 Naira! Call 08012345678 to claim your prize.</textarea>
                     </div>
                     <button class="btn btn-danger" onclick="checkSMS()">📱 Scan SMS for Fraud</button>
                 </div>
-                
-                <div class="premium-feature" id="premiumFeature" style="display: none;">
-                    <h3>🚀 Premium Feature Unlocked!</h3>
-                    <p id="premiumFeatureText"></p>
-                </div>
             </div>
             
-            <div id="result" class="result">Ready to protect you from Nigerian fraud...</div>
+            <div id="scannerResult" class="result">Ready to protect you from Nigerian fraud...</div>
         </div>
         
         <!-- REGISTER TAB -->
-<div id="register-content" class="tab-content">
-    <h2>Register for CyberGuard NG</h2>
-    <p>Create your account to start protecting yourself from fraud</p>
+        <div id="register-content" class="tab-content">
+            <h2>Register for CyberGuard NG</h2>
+            <p>Create your account to start protecting yourself from fraud</p>
 
-    <div class="registration-section">
-        <form onsubmit="registerUser(); return false">
-            <div class="input-group">
-                <input type="text" id="userName" placeholder="Your Full Name" autocomplete="name">
+            <div class="registration-section">
+                <form onsubmit="registerUser(); return false">
+                    <div class="input-group">
+                        <input type="text" id="userName" placeholder="Your Full Name" autocomplete="name">
+                    </div>
+                    <div class="input-group">
+                        <input type="email" id="userEmail" placeholder="Your Email Address (Required)" required autocomplete="email">
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="userPassword" placeholder="Password (Minimum 6 characters)" required autocomplete="new-password">
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="userConfirmPassword" placeholder="Confirm Password" required autocomplete="new-password">
+                    </div>
+                    <div class="input-group">
+                        <input type="text" id="userPhone" placeholder="Your WhatsApp Number (Required)" required autocomplete="tel">
+                    </div>
+                    <button type="submit" class="btn btn-premium">Create Account & Send OTP</button>
+                </form>
             </div>
-            <div class="input-group">
-                <input type="email" id="userEmail" placeholder="Your Email Address (Required)" required autocomplete="email">
-            </div>
-            <div class="input-group">
-                <input type="password" id="userPassword" placeholder="Password (Minimum 6 characters)" required autocomplete="new-password">
-            </div>
-            <div class="input-group">
-                <input type="password" id="userConfirmPassword" placeholder="Confirm Password" required autocomplete="new-password">
-            </div>
-            <div class="input-group">
-                <input type="text" id="userPhone" placeholder="Your WhatsApp Number (Required)" required autocomplete="tel">
-            </div>
-            <button type="submit" class="btn btn-premium">Create Account & Send OTP</button>
-        </form>
-    </div>
-    
             
             <div id="otpVerificationSection" class="otp-section" style="display: none;">
                 <h3>📧 Verify Your Email</h3>
@@ -894,60 +1101,102 @@ def home():
                     <p><strong>Your User ID:</strong> <span id="newUserId"></span></p>
                     <p><strong>Email:</strong> <span id="newUserEmail"></span></p>
                     <p>Your account has been verified and is ready to use!</p>
-                    <button class="btn" onclick="switchTab('scanner')">Start Scanning Now</button>
+                    <button class="btn" onclick="switchTab('scanner', event)">Start Scanning Now</button>
                 </div>
             </div>
         </div>
+        
         <!-- VERIFY EMAIL TAB -->
-<div class="registration-section">
-    <form onsubmit="sendVerificationOTP(); return false">
-        <div class="input-group">
-            <input type="email" id="verifyEmail" placeholder="Enter your registered email" required autocomplete="email">
+        <div id="verify-content" class="tab-content">
+            <h2>Verify Your Email</h2>
+            <p>Enter your email to receive a new verification code</p>
+
+            <div class="registration-section">
+                <form onsubmit="sendVerificationOTP(); return false">
+                    <div class="input-group">
+                        <input type="email" id="verifyEmail" placeholder="Enter your registered email" required autocomplete="email">
+                    </div>
+                    <button type="submit" class="btn btn-premium">Send New OTP Code</button>
+                </form>
+            </div>
+            
+            <div id="verifyOtpSection" class="otp-section" style="display: none;">
+                <h3>📧 Enter OTP Code</h3>
+                <p>We sent a 6-digit OTP code to your email</p>
+                <div class="input-group">
+                    <input type="text" id="verifyOtpCode" placeholder="Enter 6-digit OTP code" maxlength="6">
+                </div>
+                <button class="btn btn-warning" onclick="verifyExistingUserOTP()">Verify OTP</button>
+                <button class="btn" onclick="resendVerificationOTP()" style="margin-top: 10px;">Resend OTP</button>
+            </div>
+            
+            <div id="verifySuccess" style="display: none;">
+                <div class="result safe">
+                    <h3>🎉 Email Verified Successfully!</h3>
+                    <p>Your email has been verified. You can now login and use all features.</p>
+                    <button class="btn" onclick="switchTab('login', event)">Login Now</button>
+                </div>
+            </div>
         </div>
-        <button type="submit" class="btn btn-premium">Send New OTP Code</button>
-    </form>
-</div>
-    
-    <div id="verifyOtpSection" class="otp-section" style="display: none;">
-        <h3>📧 Enter OTP Code</h3>
-        <p>We sent a 6-digit OTP code to your email</p>
-        <div class="input-group">
-            <input type="text" id="verifyOtpCode" placeholder="Enter 6-digit OTP code" maxlength="6">
-        </div>
-        <button class="btn btn-warning" onclick="verifyExistingUserOTP()">Verify OTP</button>
-        <button class="btn" onclick="resendVerificationOTP()" style="margin-top: 10px;">Resend OTP</button>
-    </div>
-    
-    <div id="verifySuccess" style="display: none;">
-        <div class="result safe">
-            <h3>🎉 Email Verified Successfully!</h3>
-            <p>Your email has been verified. You can now login and use all features.</p>
-            <button class="btn" onclick="switchTab('login')">Login Now</button>
-        </div>
-    </div>
-</div>
         
         <!-- LOGIN TAB -->
-<div class="login-section">
-    <form onsubmit="loginUser(); return false">
-        <div class="input-group">
-            <input type="email" id="loginEmail" placeholder="Your Email Address" autocomplete="email">
-        </div>
-        <div class="input-group">
-            <input type="password" id="loginPassword" placeholder="Your Password" autocomplete="current-password">
-        </div>
-        <button type="submit" class="btn btn-premium">Login to Account</button>
-    </form>
-</div>
-            
-            <div style="text-align: center; margin-top: 20px;">
-                <p>Don't have an account? <a href="javascript:void(0)" onclick="switchTab('register')">Register here</a></p>
+        <div id="login-content" class="tab-content">
+            <h2>Login to Your Account</h2>
+            <p>Access your CyberGuard NG account</p>
+
+            <div class="login-section">
+                <form onsubmit="loginUser(); return false">
+                    <div class="input-group">
+                        <input type="email" id="loginEmail" placeholder="Your Email Address" autocomplete="email" required>
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="loginPassword" placeholder="Your Password" autocomplete="current-password" required>
+                    </div>
+                    <button type="submit" class="btn btn-premium">Login to Account</button>
+                </form>
+                
+                <div class="forgot-password">
+                    <a href="javascript:void(0)" onclick="showForgotPassword()">Forgot Password?</a>
+                </div>
+                
+                <p style="margin-top: 15px; text-align: center;">
+                    Don't have an account? <a href="javascript:void(0)" onclick="switchTab('register', event)">Register here</a>
+                </p>
+            </div>
+
+            <!-- Forgot Password Section -->
+            <div id="forgotPasswordSection" class="registration-section" style="display: none;">
+                <h3>🔐 Reset Your Password</h3>
+                <form onsubmit="forgotPassword(); return false">
+                    <div class="input-group">
+                        <input type="email" id="forgotPasswordEmail" placeholder="Enter your registered email" required autocomplete="email">
+                    </div>
+                    <button type="submit" class="btn btn-warning">Send Reset Link</button>
+                </form>
+                <div class="forgot-password">
+                    <a href="javascript:void(0)" onclick="hideForgotPassword()">Back to Login</a>
+                </div>
+            </div>
+
+            <!-- Reset Password Section -->
+            <div id="resetPasswordSection" class="registration-section" style="display: none;">
+                <h3>🔐 Create New Password</h3>
+                <form onsubmit="resetPassword(); return false">
+                    <div class="input-group">
+                        <input type="hidden" id="resetToken">
+                        <input type="password" id="newPassword" placeholder="New Password (Minimum 6 characters)" required autocomplete="new-password">
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="confirmPassword" placeholder="Confirm New Password" required autocomplete="new-password">
+                    </div>
+                    <button type="submit" class="btn btn-premium">Reset Password</button>
+                </form>
             </div>
         </div>
         
         <!-- PREMIUM TAB -->
         <div id="premium-content" class="tab-content">
-            <h2>Upgrade to CyberGuard Premium</h2>
+            <h2>🚀 Upgrade to CyberGuard Premium</h2>
             <p>Get advanced protection and unlimited scans</p>
             
             <div id="premiumNotLoggedIn" class="result warning">
@@ -974,7 +1223,7 @@ def home():
                         <div class="price price-premium">₦200</div>
                         <ul style="text-align: left; margin: 15px 0;">
                             <li>✓ Unlimited checks</li>
-                            <li>✓ Advanced AI detection</li>
+                            <li>✓ Advanced detection</li>
                             <li>✓ Detailed reports</li>
                             <li>✓ 24 hours access</li>
                             <li>✓ Priority support</li>
@@ -1002,9 +1251,9 @@ def home():
                     
                     <div class="bank-details">
                         <h4>🏦 Bank Transfer Details:</h4>
-                        <p><strong>Bank:</strong> ZenithBank</p>
-                        <p><strong>Account Number:</strong> 4249996702</p>
-                        <p><strong>Account Name:</strong> Aliyu Egwa Usman</p>
+                        <p><strong>Bank:</strong> ''' + YOUR_BANK_DETAILS['bank_name'] + '''</p>
+                        <p><strong>Account Number:</strong> ''' + YOUR_BANK_DETAILS['account_number'] + '''</p>
+                        <p><strong>Account Name:</strong> ''' + YOUR_BANK_DETAILS['account_name'] + '''</p>
                         <p><strong>Amount:</strong> <span id="paymentAmount">₦0</span></p>
                     </div>
                     
@@ -1018,7 +1267,7 @@ def home():
                             <ol>
                                 <li>Complete bank transfer with details above</li>
                                 <li>Take screenshot of payment confirmation</li>
-                                <li>WhatsApp screenshot to: <strong>09031769476</strong></li>
+                                <li>WhatsApp screenshot to: <strong>''' + YOUR_CONTACT['whatsapp_number'] + '''</strong></li>
                                 <li>Include your Payment ID in the message</li>
                             </ol>
                             <p>We'll activate your premium within 1 hour of payment verification!</p>
@@ -1052,18 +1301,22 @@ def home():
                         <p><strong>Premium Plan:</strong> <span id="premiumPlan"></span></p>
                         <p><strong>Premium Until:</strong> <span id="premiumUntilDate"></span></p>
                     </div>
-                    <button class="btn btn-premium" onclick="switchTab('premium')">Upgrade to Premium</button>
+                    <button class="btn btn-premium" onclick="switchTab('premium', event)">Upgrade to Premium</button>
                 </div>
             </div>
         </div>
         
         <!-- ADMIN TAB -->
-<div class="input-group">
-    <form onsubmit="loginAdmin(); return false">
-        <input type="password" id="adminPassword" placeholder="Enter Admin Password" autocomplete="current-password">
-        <button type="submit" class="btn btn-info">Access Admin Panel</button>
-    </form>
-</div>
+        <div id="admin-content" class="tab-content">
+            <h2>Admin Panel</h2>
+            <p>Restricted access - authorized personnel only</p>
+
+            <div class="input-group">
+                <form onsubmit="loginAdmin(); return false">
+                    <input type="password" id="adminPassword" placeholder="Enter Admin Password" autocomplete="current-password" required>
+                    <button type="submit" class="btn btn-info">Access Admin Panel</button>
+                </form>
+            </div>
             
             <div id="adminPanel" style="display: none;">
                 <h3>User Management</h3>
@@ -1096,9 +1349,22 @@ def home():
         let isAdmin = false;
         let pendingEmail = null;
         
+        // Check for reset token in URL
         document.addEventListener('DOMContentLoaded', function() {
             checkExistingSession();
+            checkResetToken();
         });
+        
+        function checkResetToken() {
+            const urlParams = new URLSearchParams(window.location.hash.substring(1));
+            const resetToken = urlParams.get('token');
+            if (resetToken) {
+                document.getElementById('resetToken').value = resetToken;
+                switchTab('login');
+                document.getElementById('forgotPasswordSection').style.display = 'none';
+                document.getElementById('resetPasswordSection').style.display = 'block';
+            }
+        }
         
         function checkExistingSession() {
             const savedSession = localStorage.getItem('cyberguard_session');
@@ -1128,29 +1394,10 @@ def home():
                     showNotLoggedInUI();
                 }
             } catch (error) {
+                console.error('Session validation error:', error);
                 showNotLoggedInUI();
             }
         }
-        // Clear form after successful registration
-function clearRegistrationForm() {
-    document.getElementById('userName').value = '';
-    document.getElementById('userEmail').value = '';
-    document.getElementById('userPassword').value = '';
-    document.getElementById('userConfirmPassword').value = '';
-    document.getElementById('userPhone').value = '';
-}
-
-// Clear form after successful login
-function clearLoginForm() {
-    document.getElementById('loginEmail').value = '';
-    document.getElementById('loginPassword').value = '';
-}
-
-// Clear OTP form after successful verification
-function clearOtpForm() {
-    document.getElementById('otpCode').value = '';
-    document.getElementById('verifyOtpCode').value = '';
-}
         
         function showLoggedInUI() {
             document.getElementById('userMenu').style.display = 'block';
@@ -1174,23 +1421,314 @@ function clearOtpForm() {
         }
         
         function switchTab(tabName, event = null) {
-    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
-    // Get the clicked element properly
-    let clickedElement = event ? event.currentTarget : document.querySelector(`[onclick*="${tabName}"]`);
-    
-    if (clickedElement) {
-        clickedElement.classList.add('active');
-    }
-    
-    document.getElementById(tabName + '-content').classList.add('active');
-    
-    if (tabName === 'account' && currentUser) {
-        updateAccountInfo();
-    }
-}
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabName + '-content').classList.add('active');
+            
+            // Add active class to clicked tab
+            if (event) {
+                event.currentTarget.classList.add('active');
+            } else {
+                // Find and activate the tab button
+                const tabs = document.querySelectorAll('.tab');
+                for (let tab of tabs) {
+                    if (tab.onclick && tab.onclick.toString().includes(tabName)) {
+                        tab.classList.add('active');
+                        break;
+                    }
+                }
+            }
+            
+            // Special handling for account tab
+            if (tabName === 'account' && currentUser) {
+                updateAccountInfo();
+            }
+            
+            // Reset forgot password section when switching to login
+            if (tabName === 'login') {
+                hideForgotPassword();
+            }
+        }
         
+        function showForgotPassword() {
+            document.getElementById('forgotPasswordSection').style.display = 'block';
+        }
+        
+        function hideForgotPassword() {
+            document.getElementById('forgotPasswordSection').style.display = 'none';
+            document.getElementById('resetPasswordSection').style.display = 'none';
+        }
+        
+        async function forgotPassword() {
+            const email = document.getElementById('forgotPasswordEmail').value;
+            
+            if (!email) {
+                alert('Please enter your email address');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/forgot-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('✅ Password reset link sent to your email! Check your inbox.');
+                    hideForgotPassword();
+                } else {
+                    alert('Error: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+            }
+        }
+        
+        async function resetPassword() {
+            const token = document.getElementById('resetToken').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+            
+            if (!token) {
+                alert('Invalid reset token');
+                return;
+            }
+            
+            if (!newPassword || !confirmPassword) {
+                alert('Please fill in all fields');
+                return;
+            }
+            
+            if (newPassword !== confirmPassword) {
+                alert('Passwords do not match');
+                return;
+            }
+            
+            if (newPassword.length < 6) {
+                alert('Password must be at least 6 characters long');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/reset-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        token: token,
+                        new_password: newPassword,
+                        confirm_password: confirmPassword
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('✅ Password reset successfully! You can now login with your new password.');
+                    hideForgotPassword();
+                    // Clear the form
+                    document.getElementById('newPassword').value = '';
+                    document.getElementById('confirmPassword').value = '';
+                } else {
+                    alert('Error: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+            }
+        }
+
+        // =============================================
+        // SCANNER FUNCTIONS
+        // =============================================
+
+        async function scanURL() {
+            if (!currentUser) {
+                alert('Please login first');
+                switchTab('login');
+                return;
+            }
+            
+            const url = document.getElementById('searchInput').value.trim();
+            if (!url) {
+                showResult({
+                    message: '❌ Please enter a URL to scan',
+                    type: 'warning'
+                });
+                return;
+            }
+            
+            try {
+                // Show loading state
+                showResult({
+                    message: '🔍 Scanning URL for Nigerian fraud patterns...',
+                    type: 'warning'
+                });
+                
+                const response = await fetch('/api/scan-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        url: url,
+                        user_id: currentUser 
+                    })
+                });
+                
+                const result = await response.json();
+                
+                // Handle email verification requirement
+                if (result.needs_verification) {
+                    alert('📧 ' + result.message);
+                    switchTab('register');
+                    return;
+                }
+                
+                if (result.success === false) {
+                    showResult({
+                        message: '❌ ' + result.message,
+                        type: 'warning'
+                    });
+                    return;
+                }
+                
+                showResult(result);
+                loadUserStats();
+            } catch (error) {
+                showResult({
+                    message: '❌ Network error. Please try again.',
+                    type: 'warning'
+                });
+            }
+        }
+
+        async function checkUSSD() {
+            if (!currentUser) {
+                alert('Please login first');
+                switchTab('login');
+                return;
+            }
+            
+            const code = document.getElementById('ussdInput').value;
+            if (!code) {
+                showResult({
+                    message: '❌ Please enter a USSD code to check',
+                    type: 'warning'
+                });
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/check-ussd', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code, user_id: currentUser })
+                });
+                
+                const result = await response.json();
+                
+                // Handle email verification requirement
+                if (result.needs_verification) {
+                    alert('📧 ' + result.message);
+                    switchTab('register');
+                    return;
+                }
+                
+                if (result.success === false) {
+                    showResult({
+                        message: '❌ ' + result.message,
+                        type: 'warning'
+                    });
+                    return;
+                }
+                
+                showResult(result);
+                loadUserStats();
+            } catch (error) {
+                showResult({
+                    message: '❌ Network error. Please try again.',
+                    type: 'warning'
+                });
+            }
+        }
+
+        async function checkSMS() {
+            if (!currentUser) {
+                alert('Please login first');
+                switchTab('login');
+                return;
+            }
+            
+            const sms = document.getElementById('smsInput').value;
+            if (!sms) {
+                showResult({
+                    message: '❌ Please enter an SMS message to scan',
+                    type: 'warning'
+                });
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/check-sms', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sms: sms, user_id: currentUser })
+                });
+                
+                const result = await response.json();
+                
+                // Handle email verification requirement
+                if (result.needs_verification) {
+                    alert('📧 ' + result.message);
+                    switchTab('register');
+                    return;
+                }
+                
+                if (result.success === false) {
+                    showResult({
+                        message: '❌ ' + result.message,
+                        type: 'warning'
+                    });
+                    return;
+                }
+                
+                showResult(result);
+                loadUserStats();
+            } catch (error) {
+                showResult({
+                    message: '❌ Network error. Please try again.',
+                    type: 'warning'
+                });
+            }
+        }
+
+        function showResult(data) {
+            const result = document.getElementById('scannerResult');
+            
+            if (result) {
+                result.textContent = data.message;
+                result.className = 'result ' + (data.type || 'warning');
+                result.style.display = 'block';
+                
+                if (data.limit_reached) {
+                    setTimeout(() => switchTab('premium'), 2000);
+                }
+            } else {
+                console.error('Result element not found');
+            }
+        }
+
+        // =============================================
+        // USER REGISTRATION & AUTHENTICATION
+        // =============================================
+
         async function registerUser() {
             const email = document.getElementById('userEmail').value;
             const password = document.getElementById('userPassword').value;
@@ -1242,7 +1780,7 @@ function clearOtpForm() {
                 alert('Network error. Please check your connection and try again.');
             }
         }
-        
+
         async function verifyOTP() {
             const otpCode = document.getElementById('otpCode').value;
             
@@ -1285,7 +1823,7 @@ function clearOtpForm() {
                 alert('Network error. Please try again.');
             }
         }
-        
+
         async function resendOTP() {
             if (!pendingEmail) {
                 alert('No email found. Please start registration again.');
@@ -1309,177 +1847,178 @@ function clearOtpForm() {
                 alert('Network error. Please try again.');
             }
         }
+
         // Send OTP for existing unverified users
-async function sendVerificationOTP() {
-    const email = document.getElementById('verifyEmail').value;
-    
-    if (!email) {
-        alert('Please enter your email address');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/send-verification-otp', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email })
-        });
-        
-        const result = await response.json();
-        if (result.success) {
-            pendingEmail = email;
-            document.getElementById('verifyOtpSection').style.display = 'block';
-            alert('New OTP sent to your email! Please check your inbox.');
-        } else {
-            alert('Error: ' + result.message);
-        }
-    } catch (error) {
-        alert('Network error. Please check your connection and try again.');
-    }
-}
-
-// Verify OTP for existing users
-async function verifyExistingUserOTP() {
-    const otpCode = document.getElementById('verifyOtpCode').value;
-    
-    if (!otpCode || otpCode.length !== 6) {
-        alert('Please enter a valid 6-digit OTP code');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/verify-otp', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                email: pendingEmail,
-                otp_code: otpCode
-            })
-        });
-        
-        const result = await response.json();
-        if (result.success) {
-            document.getElementById('verifySuccess').style.display = 'block';
-            document.getElementById('verifyOtpSection').style.display = 'none';
+        async function sendVerificationOTP() {
+            const email = document.getElementById('verifyEmail').value;
             
-            alert('🎉 Email verified successfully! You can now login.');
-        } else {
-            alert('Error: ' + result.message);
-        }
-    } catch (error) {
-        alert('Network error. Please try again.');
-    }
-}
-
-// Resend OTP for existing users
-async function resendVerificationOTP() {
-    if (!pendingEmail) {
-        alert('No email found. Please enter your email first.');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/resend-otp', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: pendingEmail })
-        });
-        
-        const result = await response.json();
-        if (result.success) {
-            alert('New OTP sent to your email!');
-        } else {
-            alert('Error: ' + result.message);
-        }
-    } catch (error) {
-        alert('Network error. Please try again.');
-    }
-}
-        
-         async function loginUser() {
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-    
-    if (!email || !password) {
-        alert('Please enter both email and password');
-        return;
-    }
-    
-    // Show loading state
-    const loginBtn = event.target;
-    loginBtn.textContent = 'Logging in...';
-    loginBtn.disabled = true;
-    
-    try {
-        const response = await fetch('/api/login-user', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                email: email,
-                password: password
-            })
-        });
-        
-        const result = await response.json();
-        
-        // RESET BUTTON
-        loginBtn.textContent = 'Login to Account';
-        loginBtn.disabled = false;
-        
-        if (result.success) {
-            currentSession = result.session_token;
-            currentUser = result.user_id;
-            localStorage.setItem('cyberguard_session', currentSession);
+            if (!email) {
+                alert('Please enter your email address');
+                return;
+            }
             
-            clearLoginForm();
-            
-            showLoggedInUI();
-            loadUserStats();
-            switchTab('scanner');
-            
-            // Show SUCCESS message instead of error
-            showResult({
-                message: '✅ Login successful! Welcome back.',
-                type: 'safe'
-            });
-            
-        } else {
-            // Handle email verification required
-            if (result.needs_verification) {
-                alert('📧 ' + result.message);
-                
-                // Pre-fill email in registration form and show OTP section
-                pendingEmail = email;
-                switchTab('register');
-                document.getElementById('userEmail').value = email;
-                document.getElementById('userEmail').readOnly = true;
-                document.getElementById('otpVerificationSection').style.display = 'block';
-                
-                document.getElementById('otpVerificationSection').scrollIntoView({ 
-                    behavior: 'smooth' 
+            try {
+                const response = await fetch('/api/send-verification-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email })
                 });
                 
-            } else {
-                // Regular login error - show in result box
+                const result = await response.json();
+                if (result.success) {
+                    pendingEmail = email;
+                    document.getElementById('verifyOtpSection').style.display = 'block';
+                    alert('New OTP sent to your email! Please check your inbox.');
+                } else {
+                    alert('Error: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please check your connection and try again.');
+            }
+        }
+
+        // Verify OTP for existing users
+        async function verifyExistingUserOTP() {
+            const otpCode = document.getElementById('verifyOtpCode').value;
+            
+            if (!otpCode || otpCode.length !== 6) {
+                alert('Please enter a valid 6-digit OTP code');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/verify-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        email: pendingEmail,
+                        otp_code: otpCode
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    document.getElementById('verifySuccess').style.display = 'block';
+                    document.getElementById('verifyOtpSection').style.display = 'none';
+                    
+                    alert('🎉 Email verified successfully! You can now login.');
+                } else {
+                    alert('Error: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+            }
+        }
+
+        // Resend OTP for existing users
+        async function resendVerificationOTP() {
+            if (!pendingEmail) {
+                alert('No email found. Please enter your email first.');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/resend-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: pendingEmail })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('New OTP sent to your email!');
+                } else {
+                    alert('Error: ' + result.message);
+                }
+            } catch (error) {
+                alert('Network error. Please try again.');
+            }
+        }
+
+        async function loginUser() {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            
+            if (!email || !password) {
+                alert('Please enter both email and password');
+                return;
+            }
+            
+            // Show loading state
+            const loginBtn = event.target;
+            const originalText = loginBtn.textContent;
+            loginBtn.textContent = 'Logging in...';
+            loginBtn.disabled = true;
+            
+            try {
+                const response = await fetch('/api/login-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        email: email,
+                        password: password
+                    })
+                });
+                
+                const result = await response.json();
+                
+                // Reset button
+                loginBtn.textContent = originalText;
+                loginBtn.disabled = false;
+                
+                if (result.success) {
+                    currentSession = result.session_token;
+                    currentUser = result.user_id;
+                    localStorage.setItem('cyberguard_session', currentSession);
+                    
+                    clearLoginForm();
+                    
+                    showLoggedInUI();
+                    loadUserStats();
+                    switchTab('scanner');
+                    
+                    // Show success message
+                    showResult({
+                        message: '✅ Login successful! Welcome back.',
+                        type: 'safe'
+                    });
+                    
+                } else {
+                    // Handle email verification required
+                    if (result.needs_verification) {
+                        alert('📧 ' + result.message);
+                        
+                        // Pre-fill email in registration form and show OTP section
+                        pendingEmail = email;
+                        switchTab('register');
+                        document.getElementById('userEmail').value = email;
+                        document.getElementById('userEmail').readOnly = true;
+                        document.getElementById('otpVerificationSection').style.display = 'block';
+                        
+                        document.getElementById('otpVerificationSection').scrollIntoView({ 
+                            behavior: 'smooth' 
+                        });
+                        
+                    } else {
+                        // Regular login error
+                        showResult({
+                            message: '❌ ' + result.message,
+                            type: 'warning'
+                        });
+                    }
+                }
+            } catch (error) {
+                // Reset button on error
+                loginBtn.textContent = originalText;
+                loginBtn.disabled = false;
+                
                 showResult({
-                    message: '❌ ' + result.message,
+                    message: '❌ Network error. Please check your connection and try again.',
                     type: 'warning'
                 });
             }
         }
-    } catch (error) {
-        // RESET BUTTON on error too
-        loginBtn.textContent = 'Login to Account';
-        loginBtn.disabled = false;
-        
-        // Show proper error message
-        showResult({
-            message: '❌ Network error. Please check your connection and try again.',
-            type: 'warning'
-        });
-    }
-}
-        
+
         async function logout() {
             if (currentSession) {
                 await fetch('/api/logout', {
@@ -1495,28 +2034,33 @@ async function resendVerificationOTP() {
             showNotLoggedInUI();
             switchTab('login');
         }
-        
+
         async function loadUserStats() {
             if (!currentUser) return;
             
             try {
                 const response = await fetch('/api/user-stats?user_id=' + currentUser);
                 const data = await response.json();
-                updateUI(data);
+                if (data.success) {
+                    updateUI(data);
+                }
             } catch (error) {
                 console.log('Error loading user stats');
             }
         }
-        
+
         function updateUI(stats) {
             if (!currentUser) return;
             
             const isPremium = stats.is_premium;
             const maxChecks = isPremium ? '∞' : '5';
             
+            // Update scanner stats
             document.getElementById('checksCount').textContent = stats.checks_today;
             document.getElementById('maxChecks').textContent = maxChecks;
             document.getElementById('accountType').textContent = isPremium ? 'Premium 🏆' : 'Free';
+            
+            // Update account info
             document.getElementById('accountChecks').textContent = stats.checks_today;
             document.getElementById('accountMaxChecks').textContent = maxChecks;
             document.getElementById('totalChecks').textContent = stats.total_checks;
@@ -1538,104 +2082,36 @@ async function resendVerificationOTP() {
                 document.getElementById('premiumAccountInfo').style.display = 'none';
             }
         }
-        
+
         function updateAccountInfo() {
             loadUserStats();
         }
-        
-         async function checkUSSD() {
-    if (!currentUser) {
-        alert('Please login first');
-        switchTab('login');
-        return;
-    }
-    
-    const code = document.getElementById('ussdInput').value;
-    if (!code) return;
-    
-    try {
-        const response = await fetch('/api/check-ussd', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: code, user_id: currentUser })
-        });
-        
-        const result = await response.json();
-        
-        // Handle email verification requirement
-        if (result.needs_verification) {
-            alert('📧 ' + result.message);
-            switchTab('register');
-            return;
-        }
-        
-        showResult(result);
-        loadUserStats();
-    } catch (error) {
-        showResult({
-            message: '❌ Network error. Please try again.',
-            type: 'warning'
-        });
-    }
-}
 
-async function checkSMS() {
-    if (!currentUser) {
-        alert('Please login first');
-        switchTab('login');
-        return;
-    }
-    
-    const sms = document.getElementById('smsInput').value;
-    if (!sms) return;
-    
-    try {
-        const response = await fetch('/api/check-sms', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sms: sms, user_id: currentUser })
-        });
-        
-        const result = await response.json();
-        
-        // Handle email verification requirement
-        if (result.needs_verification) {
-            alert('📧 ' + result.message);
-            switchTab('register');
-            return;
+        // Clear form after successful registration
+        function clearRegistrationForm() {
+            document.getElementById('userName').value = '';
+            document.getElementById('userEmail').value = '';
+            document.getElementById('userPassword').value = '';
+            document.getElementById('userConfirmPassword').value = '';
+            document.getElementById('userPhone').value = '';
         }
-        
-        showResult(result);
-        loadUserStats();
-    } catch (error) {
-        showResult({
-            message: '❌ Network error. Please try again.',
-            type: 'warning'
-        });
-    }
-}
-        
-        function showResult(data) {
-            const result = document.getElementById('result');
-            const premiumFeature = document.getElementById('premiumFeature');
-            const premiumFeatureText = document.getElementById('premiumFeatureText');
-            
-            result.textContent = data.message;
-            result.className = 'result ' + data.type;
-            result.style.display = 'block';
-            
-            if (data.premium_features) {
-                premiumFeatureText.textContent = data.premium_features;
-                premiumFeature.style.display = 'block';
-            } else {
-                premiumFeature.style.display = 'none';
-            }
-            
-            if (data.limit_reached) {
-                setTimeout(() => switchTab('premium'), 2000);
-            }
+
+        // Clear form after successful login
+        function clearLoginForm() {
+            document.getElementById('loginEmail').value = '';
+            document.getElementById('loginPassword').value = '';
         }
-        
+
+        // Clear OTP form after successful verification
+        function clearOtpForm() {
+            document.getElementById('otpCode').value = '';
+            document.getElementById('verifyOtpCode').value = '';
+        }
+
+        // =============================================
+        // PREMIUM & PAYMENT FUNCTIONS
+        // =============================================
+
         function showPaymentForm(plan) {
             if (!currentUser) {
                 alert('Please login first');
@@ -1649,7 +2125,8 @@ async function checkSMS() {
             
             const plans = {
                 'daily': { price: 200, name: 'Daily Premium (24 hours)' },
-                'weekly': { price: 1000, name: 'Weekly Premium (7 days)' }
+                'weekly': { price: 1000, name: 'Weekly Premium (7 days)' },
+                'monthly': { price: 3000, name: 'Monthly Premium (30 days)' }
             };
             
             const planInfo = plans[plan];
@@ -1659,7 +2136,7 @@ async function checkSMS() {
             `;
             document.getElementById('paymentAmount').textContent = `₦${planInfo.price}`;
         }
-        
+
         async function initiatePayment() {
             if (!currentUser) {
                 alert('Please login first');
@@ -1695,7 +2172,7 @@ async function checkSMS() {
                 alert('Network error. Please check your connection and try again.');
             }
         }
-        
+
         async function checkPaymentStatus() {
             if (!currentPaymentId || !currentUser) {
                 alert('No payment found. Please initiate a payment first.');
@@ -1723,8 +2200,11 @@ async function checkSMS() {
                 alert('Network error. Please try again.');
             }
         }
-        
-        // Admin functions
+
+        // =============================================
+        // ADMIN FUNCTIONS
+        // =============================================
+
         async function loginAdmin() {
             const password = document.getElementById('adminPassword').value;
             if (password === '0701805Aliyu@@') {
@@ -1736,7 +2216,7 @@ async function checkSMS() {
                 alert('Invalid admin password');
             }
         }
-        
+
         async function loadAllUsers() {
             if (!isAdmin) return;
             
@@ -1765,7 +2245,7 @@ async function checkSMS() {
                 console.error('Error loading users:', error);
             }
         }
-        
+
         async function loadAllPayments() {
             if (!isAdmin) return;
             
@@ -1799,7 +2279,7 @@ async function checkSMS() {
                 console.error('Error loading payments:', error);
             }
         }
-        
+
         async function verifyPayment(paymentId) {
             if (!isAdmin) return;
             
@@ -1822,7 +2302,7 @@ async function checkSMS() {
                 alert('Network error');
             }
         }
-        
+
         async function activateUserPremium(userId) {
             if (!isAdmin) return;
             
@@ -1849,7 +2329,7 @@ async function checkSMS() {
                 alert('Network error');
             }
         }
-        
+
         async function manualActivatePremium() {
             if (!isAdmin) return;
             
@@ -1869,486 +2349,612 @@ async function checkSMS() {
     '''
 
 # =============================================
-# ENHANCED AUTHENTICATION API ENDPOINTS
+# SCANNER API ENDPOINTS
+# =============================================
+
+@app.route('/api/scan-url', methods=['POST'])
+def api_scan_url():
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User ID is required'})
+        
+        user = UserManager.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Enforce email verification
+        if not user.get('is_verified', False):
+            return jsonify({
+                'success': False,
+                'message': '❌ Please verify your email first to use security scanner.',
+                'type': 'warning',
+                'needs_verification': True
+            })
+        
+        # Check free limit
+        if not user['is_premium'] and not UserManager.can_make_free_check(user):
+            return jsonify({
+                'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited scans.',
+                'type': 'warning',
+                'limit_reached': True
+            })
+        
+        UserManager.record_check(user)
+        
+        # Use simple scanner
+        result = scanner.scan_url(url)
+        return jsonify({
+            'success': True,
+            'message': result['message'],
+            'type': result['type']
+        })
+        
+    except Exception as e:
+        logger.error(f"URL scan error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during URL scan'})
+
+# =============================================
+# AUTHENTICATION API ENDPOINTS
 # =============================================
 
 @app.route('/api/register-user', methods=['POST'])
 def api_register_user():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-    phone_number = data.get('phone_number')
-    name = data.get('name')
-    
-    if not email or not password or not phone_number:
-        return jsonify({'success': False, 'message': 'Email, password and phone number are required'})
-    
-    # Create user
-    user, error = UserManager.create_user(email, password, phone_number, name)
-    if error:
-        return jsonify({'success': False, 'message': error})
-    
-    # Generate and send OTP
-    if OTPManager.generate_and_send_otp(email):
-        return jsonify({
-            'success': True,
-            'message': 'Registration successful! OTP sent to your email.'
-        })
-    else:
-        return jsonify({
-            'success': True,
-            'message': 'Registration successful! But failed to send OTP. Please contact support.'
-        })
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password')
+        phone_number = data.get('phone_number', '').strip()
+        name = data.get('name', '').strip()
+        
+        if not email or not password or not phone_number:
+            return jsonify({'success': False, 'message': 'Email, password and phone number are required'})
+        
+        if len(password) < 6:
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'})
+        
+        if not re.match(r'^0[7-9][0-9]{9}$', phone_number):
+            return jsonify({'success': False, 'message': 'Please enter a valid Nigerian phone number'})
+        
+        # Create user
+        user, error = UserManager.create_user(email, password, phone_number, name)
+        if error:
+            return jsonify({'success': False, 'message': error})
+        
+        # Generate and send OTP
+        if OTPManager.generate_and_send_otp(email):
+            return jsonify({
+                'success': True,
+                'message': 'Registration successful! OTP sent to your email.',
+                'user_id': user['id']
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Registration successful! But failed to send OTP. Please use "Verify Email" tab to request a new OTP.'
+            })
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during registration'})
 
 @app.route('/api/verify-otp', methods=['POST'])
 def api_verify_otp():
-    data = request.get_json()
-    email = data.get('email')
-    otp_code = data.get('otp_code')
-    
-    if not email or not otp_code:
-        return jsonify({'success': False, 'message': 'Email and OTP code are required'})
-    
-    # Verify OTP
-    if OTPManager.verify_otp(email, otp_code):
-        # Find user by email and mark as verified
-        users = Database.load_users()
-        user = None
-        for user_data in users.values():
-            if user_data.get('email') == email:
-                user = user_data
-                break
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        otp_code = data.get('otp_code')
         
+        if not email or not otp_code:
+            return jsonify({'success': False, 'message': 'Email and OTP code are required'})
+        
+        # Verify OTP
+        if OTPManager.verify_otp(email, otp_code):
+            # Find user by email and mark as verified
+            user = UserManager.get_user_by_email(email)
+            if user:
+                UserManager.verify_user_email(user['id'])
+                
+                # Create session after verification
+                session_token = AuthManager.create_session(user['id'])
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Email verified successfully!',
+                    'user_id': user['id'],
+                    'session_token': session_token
+                })
+            else:
+                return jsonify({'success': False, 'message': 'User not found'})
+        else:
+            return jsonify({'success': False, 'message': 'Invalid or expired OTP code'})
+    except Exception as e:
+        logger.error(f"OTP verification error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during OTP verification'})
+
+@app.route('/api/send-verification-otp', methods=['POST'])
+def api_send_verification_otp():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'})
+        
+        # Check if user exists
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            return jsonify({'success': False, 'message': 'Email not found. Please register first.'})
+        
+        # Check if already verified
+        if user.get('is_verified', False):
+            return jsonify({'success': False, 'message': 'Email is already verified'})
+        
+        # Generate and send OTP
+        if OTPManager.generate_and_send_otp(email):
+            return jsonify({
+                'success': True,
+                'message': 'OTP sent to your email!'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to send OTP. Please try again.'
+            })
+    except Exception as e:
+        logger.error(f"Send verification OTP error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/resend-otp', methods=['POST'])
+def api_resend_otp():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'})
+        
+        if OTPManager.generate_and_send_otp(email):
+            return jsonify({'success': True, 'message': 'New OTP sent to your email'})
+        else:
+            return jsonify({'success': False, 'message': 'Failed to send OTP'})
+    except Exception as e:
+        logger.error(f"Resend OTP error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/login-user', methods=['POST'])
+def api_login_user():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password')
+        
+        if not email or not password:
+            return jsonify({'success': False, 'message': 'Email and password are required'})
+        
+        user = UserManager.authenticate_user(email, password)
         if user:
-            UserManager.verify_user_email(user['id'])
+            # Check if email is verified
+            if not user.get('is_verified', False):
+                return jsonify({
+                    'success': False, 
+                    'message': 'Please verify your email first. Check your inbox for OTP.',
+                    'needs_verification': True
+                })
             
-            # Create session ONLY after verification
+            # Create session only if verified
             session_token = AuthManager.create_session(user['id'])
             
             return jsonify({
                 'success': True,
-                'message': 'Email verified successfully!',
+                'message': 'Login successful!',
                 'user_id': user['id'],
                 'session_token': session_token
             })
         else:
-            return jsonify({'success': False, 'message': 'User not found'})
-    else:
-        return jsonify({'success': False, 'message': 'Invalid or expired OTP code'})
-
-@app.route('/api/send-verification-otp', methods=['POST'])
-def api_send_verification_otp():
-    data = request.get_json()
-    email = data.get('email')
-    
-    if not email:
-        return jsonify({'success': False, 'message': 'Email is required'})
-    
-    # Check if user exists
-    users = Database.load_users()
-    user_exists = False
-    for user in users.values():
-        if user.get('email') == email:
-            user_exists = True
-            # Check if already verified
-            if user.get('is_verified', False):
-                return jsonify({'success': False, 'message': 'Email is already verified'})
-            break
-    
-    if not user_exists:
-        return jsonify({'success': False, 'message': 'Email not found. Please register first.'})
-    
-    # Generate and send OTP
-    if OTPManager.generate_and_send_otp(email):
-        return jsonify({
-            'success': True,
-            'message': 'OTP sent to your email!'
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'message': 'Failed to send OTP. Please try again.'
-        })
-
-@app.route('/api/resend-otp', methods=['POST'])
-def api_resend_otp():
-    data = request.get_json()
-    email = data.get('email')
-    
-    if not email:
-        return jsonify({'success': False, 'message': 'Email is required'})
-    
-    if OTPManager.generate_and_send_otp(email):
-        return jsonify({'success': True, 'message': 'New OTP sent to your email'})
-    else:
-        return jsonify({'success': False, 'message': 'Failed to send OTP'})
-
-@app.route('/api/login-user', methods=['POST'])
-def api_login_user():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-    
-    if not email or not password:
-        return jsonify({'success': False, 'message': 'Email and password are required'})
-    
-    user = UserManager.authenticate_user(email, password)
-    if user:
-        # CHECK IF EMAIL IS VERIFIED
-        if not user.get('is_verified', False):
-            return jsonify({
-                'success': False, 
-                'message': 'Please verify your email first. Check your inbox for OTP.',
-                'needs_verification': True
-            })
-        
-        # Create session only if verified
-        session_token = AuthManager.create_session(user['id'])
-        
-        return jsonify({
-            'success': True,
-            'message': 'Login successful!',
-            'user_id': user['id'],
-            'session_token': session_token
-        })
-    else:
-        return jsonify({'success': False, 'message': 'Invalid email or password'})
+            return jsonify({'success': False, 'message': 'Invalid email or password'})
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during login'})
 
 @app.route('/api/validate-session', methods=['POST'])
 def api_validate_session():
-    data = request.get_json()
-    session_token = data.get('session_token')
-    
-    user_id = AuthManager.validate_session(session_token)
-    if user_id:
-        return jsonify({
-            'success': True,
-            'user_id': user_id
-        })
-    else:
-        return jsonify({'success': False, 'message': 'Invalid or expired session'})
+    try:
+        data = request.get_json()
+        session_token = data.get('session_token')
+        
+        user_id = AuthManager.validate_session(session_token)
+        if user_id:
+            return jsonify({
+                'success': True,
+                'user_id': user_id
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Invalid or expired session'})
+    except Exception as e:
+        logger.error(f"Session validation error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
-    data = request.get_json()
-    session_token = data.get('session_token')
-    
-    if AuthManager.logout_session(session_token):
-        return jsonify({'success': True, 'message': 'Logged out successfully'})
-    else:
-        return jsonify({'success': False, 'message': 'Logout failed'})
+    try:
+        data = request.get_json()
+        session_token = data.get('session_token')
+        
+        if AuthManager.logout_session(session_token):
+            return jsonify({'success': True, 'message': 'Logged out successfully'})
+        else:
+            return jsonify({'success': False, 'message': 'Logout failed'})
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+# =============================================
+# PASSWORD RESET ENDPOINTS
+# =============================================
+
+@app.route('/api/forgot-password', methods=['POST'])
+def api_forgot_password():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'})
+        
+        user = UserManager.get_user_by_email(email)
+        if not user:
+            # Don't reveal if email exists for security
+            return jsonify({
+                'success': True, 
+                'message': 'If the email exists, a password reset link has been sent.'
+            })
+        
+        reset_token = UserManager.create_password_reset_token(email)
+        if not reset_token:
+            return jsonify({'success': False, 'message': 'Failed to create reset token'})
+        
+        if EmailService.send_password_reset_email(email, reset_token):
+            return jsonify({
+                'success': True,
+                'message': 'Password reset link sent to your email!'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to send reset email. Please try again.'
+            })
+    except Exception as e:
+        logger.error(f"Forgot password error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+@app.route('/api/reset-password', methods=['POST'])
+def api_reset_password():
+    try:
+        data = request.get_json()
+        token = data.get('token')
+        new_password = data.get('new_password')
+        confirm_password = data.get('confirm_password')
+        
+        if not token or not new_password or not confirm_password:
+            return jsonify({'success': False, 'message': 'All fields are required'})
+        
+        if new_password != confirm_password:
+            return jsonify({'success': False, 'message': 'Passwords do not match'})
+        
+        if len(new_password) < 6:
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'})
+        
+        # Find user by reset token
+        users = UserManager.get_all_users()
+        user_email = None
+        for user in users.values():
+            if 'reset_tokens' in user:
+                for reset_token in user['reset_tokens']:
+                    if (reset_token['token'] == token and 
+                        not reset_token['used'] and 
+                        datetime.now() < datetime.fromisoformat(reset_token['expires_at'])):
+                        user_email = user['email']
+                        break
+            if user_email:
+                break
+        
+        if not user_email:
+            return jsonify({'success': False, 'message': 'Invalid or expired reset token'})
+        
+        # Update password
+        if UserManager.update_password(user_email, new_password):
+            # Mark token as used
+            UserManager.use_reset_token(user_email, token)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Password reset successfully! You can now login with your new password.'
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to reset password'})
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
+
+# =============================================
+# USER MANAGEMENT ENDPOINTS
+# =============================================
 
 @app.route('/api/user-stats', methods=['GET'])
 def api_user_stats():
-    user_id = request.args.get('user_id', 'default')
-    user = UserManager.get_user(user_id)
-    
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'})
-    
-    # Check if premium has expired
-    if user['is_premium'] and user.get('premium_until'):
-        premium_until = datetime.strptime(user['premium_until'], '%Y-%m-%d').date() if isinstance(user['premium_until'], str) else user['premium_until']
-        if datetime.now().date() > premium_until:
-            user['is_premium'] = False
-            user['premium_until'] = None
-            user['premium_plan'] = None
-            UserManager.save_user(user)
-    
-    return jsonify({
-        'is_premium': user['is_premium'],
-        'premium_until': user.get('premium_until'),
-        'premium_plan': user.get('premium_plan'),
-        'checks_today': user['checks_today'],
-        'total_checks': user['total_checks'],
-        'payment_pending': user.get('payment_pending', False),
-        'phone_number': user.get('phone_number'),
-        'email': user.get('email'),
-        'name': user.get('name'),
-        'is_verified': user.get('is_verified', False)
-    })
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User ID is required'})
+        
+        user = UserManager.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Check if premium has expired
+        if user['is_premium'] and user.get('premium_until'):
+            premium_until = datetime.strptime(user['premium_until'], '%Y-%m-%d').date() if isinstance(user['premium_until'], str) else user['premium_until']
+            if datetime.now().date() > premium_until:
+                user['is_premium'] = False
+                user['premium_until'] = None
+                user['premium_plan'] = None
+                UserManager.save_user(user)
+        
+        return jsonify({
+            'success': True,
+            'is_premium': user['is_premium'],
+            'premium_until': user.get('premium_until'),
+            'premium_plan': user.get('premium_plan'),
+            'checks_today': user['checks_today'],
+            'total_checks': user['total_checks'],
+            'payment_pending': user.get('payment_pending', False),
+            'phone_number': user.get('phone_number'),
+            'email': user.get('email'),
+            'name': user.get('name'),
+            'is_verified': user.get('is_verified', False)
+        })
+    except Exception as e:
+        logger.error(f"User stats error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
-# [Previous API endpoints for check-ussd, check-sms, initiate-payment, etc. remain the same]
-# ... (Include all the previous API endpoints from the earlier implementation)
+# =============================================
+# SCANNER ENDPOINTS
+# =============================================
 
 @app.route('/api/check-ussd', methods=['POST'])
 def api_check_ussd():
-    data = request.get_json()
-    code = data.get('code', '').strip()
-    user_id = data.get('user_id', 'default')
-    
-    user = UserManager.get_user(user_id)
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'})
-    
-    # ENFORCE EMAIL VERIFICATION
-    if not user.get('is_verified', False):
-        return jsonify({
-            'success': False,
-            'message': '❌ Please verify your email first to use security scanner.',
-            'type': 'warning',
-            'needs_verification': True
-        })
-    
-    # Check free limit
-    if not user['is_premium'] and not UserManager.can_make_free_check(user):
-        return jsonify({
-            'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited checks.',
-            'type': 'warning',
-            'limit_reached': True
-        })
-    
-    UserManager.record_check(user)
-    
-    # =============================================
-    # ENHANCED USSD FRAUD DETECTION
-    # =============================================
-    
-    # Verified safe Nigerian bank USSD codes
-    safe_bank_codes = [
-        '*901#', '*894#', '*737#', '*919#', '*822#', '*533#', 
-        '*322#', '*326#', '*779#', '*989#', '*123#', '*500#',
-        '*955#', '*833#', '*706#', '*909#', '*966#', '*482#',
-        '*502#', '*503#', '*504#', '*505#', '*506#', '*507#'
-    ]
-    
-    # High-risk scam patterns in USSD
-    scam_indicators = {
-        'password': 10, 'pin': 10, 'bvn': 15, 'winner': 12, 'won': 12,
-        'prize': 12, 'lottery': 12, 'claim': 10, 'verification': 8,
-        'confirm': 6, 'update': 6, 'recharge': 5, 'airtime': 4,
-        'transfer': 5, 'balance': 3, 'customer': 3, 'care': 3
-    }
-    
-    # Suspicious code patterns
-    suspicious_patterns = [
-        r'\*.*\*.*\*.*\*',  # Too many asterisks
-        r'\*.*password.*\#',  # Contains password
-        r'\*.*pin.*\#',       # Contains PIN
-        r'\*.*bvn.*\#',       # Contains BVN
-        r'\*[0-9\*]{15,}',    # Too long/complex
-    ]
-    
-    code_lower = code.lower()
-    risk_score = 0
-    detected_patterns = []
-    
-    # Check against safe codes
-    if code in safe_bank_codes:
-        message = '✅ SAFE - Verified Nigerian bank USSD code'
-        result_type = 'safe'
-        premium_features = None
-    
-    else:
-        # Check for scam indicators
-        for indicator, points in scam_indicators.items():
-            if indicator in code_lower:
-                risk_score += points
-                detected_patterns.append(indicator)
+    try:
+        data = request.get_json()
+        code = data.get('code', '').strip()
+        user_id = data.get('user_id')
         
-        # Check suspicious patterns
-        for pattern in suspicious_patterns:
-            if re.search(pattern, code_lower):
-                risk_score += 8
-                detected_patterns.append('suspicious_format')
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User ID is required'})
         
-        # Risk assessment
-        if risk_score >= 20:
-            message = '🚨 EXTREME RISK - USSD SCAM DETECTED! Do not dial!'
-            result_type = 'scam'
-        elif risk_score >= 15:
-            message = '🚨 HIGH RISK - Likely fraudulent USSD code'
-            result_type = 'scam'
-        elif risk_score >= 10:
-            message = '⚠️ SUSPICIOUS - Verify with your bank before using'
-            result_type = 'warning'
-        elif risk_score >= 5:
-            message = '⚠️ CAUTION - Unknown USSD code, use carefully'
-            result_type = 'warning'
-        else:
-            message = '✅ Likely safe USSD code'
+        user = UserManager.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Enforce email verification
+        if not user.get('is_verified', False):
+            return jsonify({
+                'success': False,
+                'message': '❌ Please verify your email first to use security scanner.',
+                'type': 'warning',
+                'needs_verification': True
+            })
+        
+        # Check free limit
+        if not user['is_premium'] and not UserManager.can_make_free_check(user):
+            return jsonify({
+                'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited checks.',
+                'type': 'warning',
+                'limit_reached': True
+            })
+        
+        UserManager.record_check(user)
+        
+        # USSD fraud detection logic
+        safe_bank_codes = [
+            '*901#', '*894#', '*737#', '*919#', '*822#', '*533#', 
+            '*322#', '*326#', '*779#', '*989#', '*123#', '*500#',
+            '*955#', '*833#', '*706#', '*909#', '*966#', '*482#'
+        ]
+        
+        scam_indicators = {
+            'password': 10, 'pin': 10, 'bvn': 15, 'winner': 12, 'won': 12,
+            'prize': 12, 'lottery': 12, 'claim': 10, 'verification': 8
+        }
+        
+        risk_score = 0
+        detected_patterns = []
+        
+        code_lower = code.lower()
+        
+        # Check against safe codes
+        if code in safe_bank_codes:
+            message = '✅ SAFE - Verified Nigerian bank USSD code'
             result_type = 'safe'
-        
-        # Premium features
-        if user['is_premium']:
-            premium_features = f'🔍 Premium Analysis: Risk Score {risk_score}/30 - Detected: {", ".join(detected_patterns)}'
         else:
-            premium_features = 'Upgrade to Premium for detailed USSD code analysis'
-    
-    return jsonify({
-        'message': message,
-        'type': result_type,
-        'premium_features': premium_features
-    })
+            # Check for scam indicators
+            for indicator, points in scam_indicators.items():
+                if indicator in code_lower:
+                    risk_score += points
+                    detected_patterns.append(indicator)
+            
+            # Risk assessment
+            if risk_score >= 20:
+                message = '🚨 EXTREME RISK - USSD SCAM DETECTED! Do not dial!'
+                result_type = 'scam'
+            elif risk_score >= 15:
+                message = '🚨 HIGH RISK - Likely fraudulent USSD code'
+                result_type = 'scam'
+            elif risk_score >= 10:
+                message = '⚠️ SUSPICIOUS - Verify with your bank before using'
+                result_type = 'warning'
+            elif risk_score >= 5:
+                message = '⚠️ CAUTION - Unknown USSD code, use carefully'
+                result_type = 'warning'
+            else:
+                message = '✅ Likely safe USSD code'
+                result_type = 'safe'
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'type': result_type
+        })
+    except Exception as e:
+        logger.error(f"USSD check error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during USSD check'})
 
 @app.route('/api/check-sms', methods=['POST'])
 def api_check_sms():
-    data = request.get_json()
-    sms = data.get('sms', '').strip()
-    user_id = data.get('user_id', 'default')
-    
-    user = UserManager.get_user(user_id)
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'})
-    
-    # ENFORCE EMAIL VERIFICATION
-    if not user.get('is_verified', False):
+    try:
+        data = request.get_json()
+        sms = data.get('sms', '').strip()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({'success': False, 'message': 'User ID is required'})
+        
+        user = UserManager.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Enforce email verification
+        if not user.get('is_verified', False):
+            return jsonify({
+                'success': False,
+                'message': '❌ Please verify your email first to use security scanner.',
+                'type': 'warning',
+                'needs_verification': True
+            })
+        
+        # Check free limit
+        if not user['is_premium'] and not UserManager.can_make_free_check(user):
+            return jsonify({
+                'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited scans.',
+                'type': 'warning',
+                'limit_reached': True
+            })
+        
+        UserManager.record_check(user)
+        
+        # SMS fraud detection logic
+        sms_lower = sms.lower()
+        score = 0
+        reasons = []
+        
+        high_risk_patterns = {
+            r'won\s*\d+[,.]?\d*\s*(million|thousand|billion)': 15,
+            r'congratulation(s)?!*\s*you\s+(won|have|are)': 12,
+            r'prize\s*(money|award|winner)': 10,
+            r'lottery|jackpot|raffle': 10,
+            r'claim\s*(your|this|now)': 8,
+            r'free\s*(money|airtime|data|gift)': 8,
+            r'account\s*verification': 7,
+            r'password\s*reset': 7,
+            r'bvn\s*(verification|update)': 15,
+            r'atm\s*card\s*(details|pin)': 15,
+            r'click\s*(link|here|below)': 6,
+            r'http[s]?://|www\.|bit\.ly': 8,
+            r'call\s*0[7-9][0-9]{8,}': 7,
+            r'urgent|immediate|action\s*required': 5
+        }
+        
+        for pattern, points in high_risk_patterns.items():
+            if re.search(pattern, sms_lower, re.IGNORECASE):
+                score += points
+                reasons.append(pattern[:30])
+        
+        # Risk assessment
+        if score >= 25:
+            message = '🚨 EXTREME RISK - NIGERIAN ADVANCE FEE SCAM DETECTED!'
+            result_type = 'scam'
+        elif score >= 18:
+            message = '🚨 HIGH-RISK SCAM - Likely financial fraud attempt'
+            result_type = 'scam'
+        elif score >= 12:
+            message = '⚠️ SUSPICIOUS - Potential phishing attempt'
+            result_type = 'warning'
+        elif score >= 8:
+            message = '⚠️ CAUTION - Some suspicious elements detected'
+            result_type = 'warning'
+        else:
+            message = '✅ Likely legitimate message'
+            result_type = 'safe'
+        
         return jsonify({
-            'success': False,
-            'message': '❌ Please verify your email first to use security scanner.',
-            'type': 'warning',
-            'needs_verification': True
+            'success': True,
+            'message': message,
+            'type': result_type,
+            'risk_score': score
         })
-    
-    # Check free limit
-    if not user['is_premium'] and not UserManager.can_make_free_check(user):
-        return jsonify({
-            'message': '❌ FREE LIMIT REACHED! Upgrade to Premium for unlimited scans.',
-            'type': 'warning',
-            'limit_reached': True
-        })
-    
-    UserManager.record_check(user)
-    
-    # =============================================
-    # ENHANCED NIGERIAN FRAUD DETECTION LOGIC
-    # =============================================
-    sms_lower = sms.lower()
-    score = 0
-    reasons = []
-    
-    # High-risk Nigerian scam patterns
-    high_risk_patterns = {
-        r'won\s*\d+[,.]?\d*\s*(million|thousand|billion|lakh|crore)': 15,
-        r'congratulation(s)?!*\s*you\s+(won|have|are)': 12,
-        r'prize\s*(money|award|winner)': 10,
-        r'lottery|jackpot|raffle': 10,
-        r'claim\s*(your|this|now|immediately)': 8,
-        r'free\s*(money|airtime|data|gift)': 8,
-        r'account\s*verification': 7,
-        r'password\s*reset': 7,
-        r'bvn\s*(verification|update|confirmation)': 15,  # Very high risk in Nigeria
-        r'atm\s*card\s*(details|number|pin)': 15,
-        r'ussd\s*code': 6,
-        r'click\s*(link|here|below)': 6,
-        r'http[s]?://|www\.|bit\.ly|tinyurl': 8,
-        r'call\s*0[7-9][0-9]{8,}': 7,  # Nigerian phone numbers
-        r'whatsapp\s*0[7-9][0-9]{8,}': 7,
-        r'urgent|immediate|action\s*required': 5,
-        r'limited\s*time|offer\s*expires': 5,
-        r'account\s*(suspended|blocked|deactivated)': 8,
-        r'security\s*breach|unauthorized': 7,
-        r'customer\s*care\s*0[7-9][0-9]{8,}': 6,
-    }
-    
-    # Check each pattern
-    for pattern, points in high_risk_patterns.items():
-        if re.search(pattern, sms_lower, re.IGNORECASE):
-            score += points
-            # Extract the matched pattern name
-            pattern_name = pattern.replace('\\s*', ' ').replace('\\d+', 'X').replace(r'[7-9]', 'X')[:30]
-            reasons.append(pattern_name)
-    
-    # Nigerian bank-specific scams
-    nigerian_bank_scams = [
-        'gtbank', 'zenithbank', 'firstbank', 'accessbank', 'uba', 
-        'fidelitybank', 'unionbank', 'polarisbank', 'ecobank', 'stanbic'
-    ]
-    
-    for bank in nigerian_bank_scams:
-        if bank in sms_lower:
-            score += 5
-            reasons.append(f'{bank}_impersonation')
-    
-    # Amount detection (common in Nigerian scams)
-    amount_patterns = [
-        r'₦\s*(\d+[,.]?\d*)',
-        r'naira\s*(\d+[,.]?\d*)',
-        r'ngn\s*(\d+[,.]?\d*)'
-    ]
-    
-    for pattern in amount_patterns:
-        if re.search(pattern, sms_lower):
-            score += 3
-            reasons.append('monetary_amount')
-    
-    # =============================================
-    # RISK ASSESSMENT & CLASSIFICATION
-    # =============================================
-    if score >= 25:
-        message = '🚨 EXTREME RISK - NIGERIAN ADVANCE FEE SCAM DETECTED!'
-        result_type = 'scam'
-        detailed_reason = "This shows classic signs of Nigerian '419' advance-fee fraud"
-    elif score >= 18:
-        message = '🚨 HIGH-RISK SCAM - Likely financial fraud attempt'
-        result_type = 'scam'
-        detailed_reason = "Multiple scam indicators detected"
-    elif score >= 12:
-        message = '⚠️ SUSPICIOUS - Potential phishing attempt'
-        result_type = 'warning'
-        detailed_reason = "Exercise extreme caution"
-    elif score >= 8:
-        message = '⚠️ CAUTION - Some suspicious elements detected'
-        result_type = 'warning'
-        detailed_reason = "Verify with official sources"
-    else:
-        message = '✅ Likely legitimate message'
-        result_type = 'safe'
-        detailed_reason = "No major scam patterns detected"
-    
-    # Premium features
-    if user['is_premium']:
-        premium_features = f'🔍 Premium Analysis: Score {score}/100 - Detected: {", ".join(reasons[:4])} - {detailed_reason}'
-    else:
-        premium_features = 'Upgrade to Premium for detailed threat analysis and scam pattern breakdown'
-    
-    return jsonify({
-        'message': message,
-        'type': result_type,
-        'premium_features': premium_features,
-        'risk_score': score
-    })
+    except Exception as e:
+        logger.error(f"SMS check error: {e}")
+        return jsonify({'success': False, 'message': 'Server error during SMS check'})
+
+# =============================================
+# PAYMENT ENDPOINTS
+# =============================================
 
 @app.route('/api/initiate-payment', methods=['POST'])
 def api_initiate_payment():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    plan_type = data.get('plan_type')
-    phone_number = data.get('phone_number')
-    name = data.get('name')
-    
-    if not user_id or not plan_type or not phone_number:
-        return jsonify({'success': False, 'message': 'Missing required fields'})
-    
-    if plan_type not in PRICING_PLANS:
-        return jsonify({'success': False, 'message': 'Invalid plan type'})
-    
-    # Create payment record
-    payment = PaymentManager.create_payment(user_id, plan_type, phone_number, name)
-    
-    return jsonify({
-        'success': True,
-        'payment_id': payment['id'],
-        'message': 'Payment initiated successfully'
-    })
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        plan_type = data.get('plan_type')
+        phone_number = data.get('phone_number')
+        name = data.get('name')
+        
+        if not user_id or not plan_type or not phone_number:
+            return jsonify({'success': False, 'message': 'Missing required fields'})
+        
+        if plan_type not in PRICING_PLANS:
+            return jsonify({'success': False, 'message': 'Invalid plan type'})
+        
+        # Create payment record
+        payment = PaymentManager.create_payment(user_id, plan_type, phone_number, name)
+        if not payment:
+            return jsonify({'success': False, 'message': 'Failed to create payment'})
+        
+        return jsonify({
+            'success': True,
+            'payment_id': payment['id'],
+            'message': 'Payment initiated successfully'
+        })
+    except Exception as e:
+        logger.error(f"Initiate payment error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 @app.route('/api/check-payment-status', methods=['GET'])
 def api_check_payment_status():
-    payment_id = request.args.get('payment_id')
-    user_id = request.args.get('user_id')
-    
-    payment = PaymentManager.get_payment(payment_id)
-    if not payment or payment['user_id'] != user_id:
-        return jsonify({'success': False, 'message': 'Payment not found'})
-    
-    user = UserManager.get_user(user_id)
-    
-    return jsonify({
-        'success': True,
-        'payment_status': payment['status'],
-        'user_premium': user['is_premium'] if user else False,
-        'premium_until': user.get('premium_until') if user else None
-    })
+    try:
+        payment_id = request.args.get('payment_id')
+        user_id = request.args.get('user_id')
+        
+        if not payment_id or not user_id:
+            return jsonify({'success': False, 'message': 'Payment ID and User ID are required'})
+        
+        payment = PaymentManager.get_payment(payment_id)
+        if not payment or payment['user_id'] != user_id:
+            return jsonify({'success': False, 'message': 'Payment not found'})
+        
+        user = UserManager.get_user(user_id)
+        
+        return jsonify({
+            'success': True,
+            'payment_status': payment['status'],
+            'user_premium': user['is_premium'] if user else False,
+            'premium_until': user.get('premium_until') if user else None
+        })
+    except Exception as e:
+        logger.error(f"Check payment status error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 # =============================================
 # ADMIN ENDPOINTS
@@ -2356,76 +2962,76 @@ def api_check_payment_status():
 
 @app.route('/api/admin/users', methods=['GET'])
 def api_admin_users():
-    users = UserManager.get_all_users()
-    return jsonify(users)
+    try:
+        users = UserManager.get_all_users()
+        return jsonify(users)
+    except Exception as e:
+        logger.error(f"Admin users error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 @app.route('/api/admin/payments', methods=['GET'])
 def api_admin_payments():
-    payments = PaymentManager.get_all_payments()
-    return jsonify(payments)
+    try:
+        payments = PaymentManager.get_all_payments()
+        return jsonify(payments)
+    except Exception as e:
+        logger.error(f"Admin payments error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 @app.route('/api/admin/verify-payment', methods=['POST'])
 def api_admin_verify_payment():
-    data = request.get_json()
-    payment_id = data.get('payment_id')
-    
-    payment = PaymentManager.get_payment(payment_id)
-    if not payment:
-        return jsonify({'success': False, 'message': 'Payment not found'})
-    
-    # Mark payment as verified
-    PaymentManager.update_payment(payment_id, {
-        'status': 'verified',
-        'verified_at': datetime.now().isoformat()
-    })
-    
-    # Activate premium for user
-    user = UserManager.get_user(payment['user_id'])
-    if user:
-        UserManager.activate_premium(user, payment['plan_type'])
-    
-    return jsonify({
-        'success': True,
-        'message': f'Premium activated for user {payment["user_id"]}'
-    })
-
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204  # "No Content - stops 404 error
-
-@app.route('/favicon.png')
-def favicon_png():
-    return '', 204
-
+    try:
+        data = request.get_json()
+        payment_id = data.get('payment_id')
+        
+        payment = PaymentManager.get_payment(payment_id)
+        if not payment:
+            return jsonify({'success': False, 'message': 'Payment not found'})
+        
+        # Mark payment as verified
+        PaymentManager.update_payment(payment_id, {
+            'status': 'verified',
+            'verified_at': datetime.now().isoformat()
+        })
+        
+        # Activate premium for user
+        user = UserManager.get_user(payment['user_id'])
+        if user:
+            UserManager.activate_premium(user, payment['plan_type'])
+        
+        return jsonify({
+            'success': True,
+            'message': f'Premium activated for user {payment["user_id"]}'
+        })
+    except Exception as e:
+        logger.error(f"Admin verify payment error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
 @app.route('/api/admin/activate-premium', methods=['POST'])
 def api_admin_activate_premium():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    plan_type = data.get('plan_type', 'weekly')
-    
-    user = UserManager.get_user(user_id)
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'})
-    
-    # Activate premium
-    UserManager.activate_premium(user, plan_type)
-    
-    return jsonify({
-        'success': True,
-        'message': f'Premium {plan_type} activated for user {user_id}'
-    })
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        plan_type = data.get('plan_type', 'weekly')
+        
+        user = UserManager.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Activate premium
+        UserManager.activate_premium(user, plan_type)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Premium {plan_type} activated for user {user_id}'
+        })
+    except Exception as e:
+        logger.error(f"Admin activate premium error: {e}")
+        return jsonify({'success': False, 'message': 'Server error'})
 
-@app.route('/api/admin/verify-user', methods=['POST'])
-def api_admin_verify_user():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    
-    user = UserManager.get_user(user_id)
-    if user:
-        UserManager.verify_user_email(user['id'])
-        return jsonify({'success': True, 'message': f'User {user_id} verified'})
-    return jsonify({'success': False, 'message': 'User not found'})
+# =============================================
+# DEBUG & HEALTH CHECK ENDPOINTS
+# =============================================
 
 @app.route('/api/debug-db')
 def debug_db():
@@ -2433,41 +3039,44 @@ def debug_db():
     try:
         db = Database.get_db()
         users_count = len(Database.load_users())
+        payments_count = len(Database.load_payments())
         
         return jsonify({
+            'success': True,
             'mongodb_connected': db is not None,
             'total_users': users_count,
+            'total_payments': payments_count,
             'database_name': db.name if db else 'None',
-            'collections': db.list_collection_names() if db else []
+            'collections': db.list_collection_names() if db else [],
+            'environment': 'production' if os.environ.get('MONGODB_URI') else 'development'
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/api/test-persistence')
-def test_persistence():
-    """Test if data persists"""
-    try:
-        # Create a test user if none exists
-        users = Database.load_users()
-        test_user_id = 'test_persistence_user'
-        
-        if test_user_id not in users:
-            users[test_user_id] = {
-                'id': test_user_id,
-                'email': 'test@persistence.com',
-                'created_at': datetime.now().isoformat()
-            }
-            Database.save_users(users)
-        
-        return jsonify({
-            'test_user_exists': test_user_id in users,
-            'total_users': len(users),
-            'persistence': 'working' if test_user_id in users else 'broken'
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+@app.route('/api/health')
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '2.0.0'
+    })
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+# =============================================
+# APPLICATION STARTUP
+# =============================================
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8001)
+    port = int(os.environ.get('PORT', 8001))
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
+    logger.info(f"🚀 Starting CyberGuard NG Server on port {port}")
+    logger.info(f"📊 Database: {'MongoDB' if Database.get_db() else 'In-Memory'}")
+    
+    app.run(host='0.0.0.0', port=port, debug=debug)
 else:
     application = app
