@@ -58,38 +58,23 @@ EMAIL_CONFIG = {
 class Database:
     _client = None
     _db = None
-    _sqlite_conn = None
-    _in_memory_storage = {
-        'users': {},
-        'payments': {},
-        'sessions': {},
-        'otp_storage': {}
-    }
     
     @staticmethod
     def get_db():
         if Database._db is None:
             try:
-                # Get connection string
-                connection_string = os.environ.get('MONGODB_URI')
+                # Get connection string - prioritize Vercel MongoDB
+                connection_string = (
+                    os.environ.get('MONGODB_ATLAS_URI') or  # Vercel MongoDB integration
+                    os.environ.get('MONGODB_URI') or        # Your current
+                    os.environ.get('DATABASE_URL')          # Generic fallback
+                )
+                
                 if not connection_string:
-                    logger.warning("❌ MONGODB_URI not found in environment")
-                    # Try alternative environment variable names
-                    connection_string = os.environ.get('MONGODB_URL') or os.environ.get('DATABASE_URL')
-                    
-                if not connection_string:
-                    # For local development without MongoDB
-                    logger.warning("⚠️ No MongoDB connection string found")
-                    
-                    # Check if we're in local development mode
-                    if os.environ.get('FLASK_DEBUG') == 'True' or os.environ.get('LOCAL_DEV'):
-                        logger.info("🖥️ Local development mode - using SQLite fallback")
-                        Database._setup_sqlite_fallback()
-                        return "sqlite"  # Return a marker instead of None
-                    
+                    logger.warning("❌ No MongoDB connection string found")
                     return None
                 
-                # Mask for logging (security)
+                # Mask for logging
                 if '@' in connection_string:
                     parts = connection_string.split('@')
                     user_part = parts[0]
@@ -98,189 +83,76 @@ class Database:
                         masked = user_pass[0] + ':••••••••@' + parts[1]
                         logger.info(f"🔗 Connecting to MongoDB: {masked}")
                 
-                # Different timeouts for local vs production
-                is_local = 'localhost' in connection_string or '127.0.0.1' in connection_string
-                timeout = 5000 if is_local else 10000
-                
-                Database._client = MongoClient(connection_string, 
-                                             serverSelectionTimeoutMS=timeout,
-                                             maxPoolSize=50,
-                                             connectTimeoutMS=timeout)
+                # Connect with optimized settings for Vercel
+                Database._client = MongoClient(
+                    connection_string,
+                    serverSelectionTimeoutMS=10000,
+                    maxPoolSize=10,
+                    connectTimeoutMS=10000,
+                    socketTimeoutMS=30000
+                )
                 
                 # Test connection
                 Database._client.admin.command('ping')
                 
                 # Extract database name
-                db_name = 'atlas-purple-book'  # Default for Vercel
+                db_name = 'atlas-purple-book'  # Default
                 
                 # Try to extract from connection string
-                if 'mongodb.net/' in connection_string:
-                    # MongoDB Atlas format
-                    parts = connection_string.split('.mongodb.net/')
-                    if len(parts) > 1:
-                        db_part = parts[1]
-                        if '?' in db_part:
-                            possible_name = db_part.split('?')[0]
-                            if possible_name and possible_name.strip():
-                                db_name = possible_name
+                if '.mongodb.net/' in connection_string:
+                    try:
+                        parts = connection_string.split('.mongodb.net/')
+                        if len(parts) > 1:
+                            db_part = parts[1].split('?')[0]
+                            if db_part and db_part.strip():
+                                db_name = db_part
+                    except:
+                        pass
                 
-                logger.info(f"📦 Using database: {db_name}")
                 Database._db = Database._client[db_name]
-                logger.info(f"✅ Connected to MongoDB database: {db_name}")
+                logger.info(f"✅ Connected to MongoDB: {db_name}")
                 
-                # Ensure collections exist
+                # Create collections if needed
                 collections = ['users', 'payments', 'sessions', 'otp_storage']
                 existing = Database._db.list_collection_names()
                 
-                for collection_name in collections:
-                    if collection_name not in existing:
-                        Database._db.create_collection(collection_name)
-                        logger.info(f"📁 Created collection: {collection_name}")
+                for collection in collections:
+                    if collection not in existing:
+                        Database._db.create_collection(collection)
+                        logger.info(f"📁 Created collection: {collection}")
                 
-                logger.info(f"📊 Collections: {Database._db.list_collection_names()}")
                 return Database._db
                 
             except Exception as e:
                 logger.error(f"❌ MongoDB connection failed: {e}")
-                
-                # Fallback to SQLite for local development
-                if os.environ.get('FLASK_DEBUG') == 'True':
-                    logger.info("🔄 Falling back to SQLite for local development")
-                    Database._setup_sqlite_fallback()
-                    return "sqlite"  # Return a marker instead of None
-                
+                # NO SQLITE FALLBACK ON VERCEL
+                if os.environ.get('VERCEL') == '1':
+                    logger.error("🚨 MongoDB failed on Vercel - check environment variables")
                 return None
         return Database._db
     
     @staticmethod
-    def _setup_sqlite_fallback():
-        """Setup SQLite as a fallback for local development"""
-        try:
-            import sqlite3
-            from contextlib import closing
-            
-            logger.info("💾 Setting up SQLite database...")
-            
-            # Create an in-memory SQLite connection
-            Database._sqlite_conn = sqlite3.connect(':memory:', check_same_thread=False)
-            Database._sqlite_conn.row_factory = sqlite3.Row
-            
-            # Create tables
-            with closing(Database._sqlite_conn.cursor()) as cur:
-                # Users table
-                cur.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        id TEXT PRIMARY KEY,
-                        email TEXT UNIQUE,
-                        password_hash TEXT,
-                        phone_number TEXT,
-                        name TEXT,
-                        is_verified BOOLEAN DEFAULT 0,
-                        is_premium BOOLEAN DEFAULT 0,
-                        premium_until TEXT,
-                        premium_plan TEXT,
-                        checks_today INTEGER DEFAULT 0,
-                        last_check_date TEXT,
-                        total_checks INTEGER DEFAULT 0,
-                        payment_pending BOOLEAN DEFAULT 0,
-                        created_at TEXT,
-                        last_login TEXT,
-                        reset_tokens TEXT DEFAULT '[]'
-                    )
-                ''')
-                
-                # Payments table
-                cur.execute('''
-                    CREATE TABLE IF NOT EXISTS payments (
-                        id TEXT PRIMARY KEY,
-                        user_id TEXT,
-                        plan_type TEXT,
-                        phone_number TEXT,
-                        name TEXT,
-                        amount INTEGER,
-                        status TEXT DEFAULT 'pending',
-                        created_at TEXT,
-                        verified_at TEXT
-                    )
-                ''')
-                
-                # Sessions table
-                cur.execute('''
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        session_token TEXT PRIMARY KEY,
-                        user_id TEXT,
-                        ip_address TEXT,
-                        user_agent TEXT,
-                        created_at TEXT,
-                        expires_at TEXT,
-                        last_accessed TEXT
-                    )
-                ''')
-                
-                # OTP storage table
-                cur.execute('''
-                    CREATE TABLE IF NOT EXISTS otp_storage (
-                        email TEXT PRIMARY KEY,
-                        otp_code TEXT,
-                        created_at TEXT,
-                        expires_at TEXT,
-                        verified BOOLEAN DEFAULT 0
-                    )
-                ''')
-                
-                Database._sqlite_conn.commit()
-            
-            logger.info("✅ SQLite database setup complete")
-            
-        except Exception as e:
-            logger.error(f"❌ SQLite setup failed: {e}")
-            return None
-    
-    @staticmethod
-    def is_sqlite_mode():
-        """Check if we're using SQLite fallback"""
-        return Database._sqlite_conn is not None
-    
-    @staticmethod
     def get_collection(collection_name):
         db = Database.get_db()
-        
-        # If using SQLite, return None (we'll handle SQLite separately)
-        if db == "sqlite" or Database.is_sqlite_mode():
-            return None
-        
-        # If MongoDB is connected, return the collection
-        if db is not None and db != "sqlite" and hasattr(db, '__getitem__'):
+        if db is not None:
             try:
                 return db[collection_name]
             except Exception as e:
-                logger.warning(f"⚠️ Could not get collection {collection_name}: {e}")
+                logger.error(f"Error getting collection {collection_name}: {e}")
         
-        # In-memory fallback
+        # Only in-memory fallback (no SQLite)
         logger.warning(f"⚠️ Using in-memory fallback for {collection_name}")
+        if not hasattr(Database, '_in_memory_storage'):
+            Database._in_memory_storage = {
+                'users': {},
+                'payments': {},
+                'sessions': {},
+                'otp_storage': {}
+            }
         return Database._in_memory_storage.get(collection_name, {})
     
-    # Update all load/save methods to handle SQLite
     @staticmethod
     def load_users():
-        # Check if using SQLite
-        if Database.is_sqlite_mode():
-            try:
-                users = {}
-                with Database._sqlite_conn:
-                    cur = Database._sqlite_conn.cursor()
-                    cur.execute("SELECT * FROM users")
-                    rows = cur.fetchall()
-                    for row in rows:
-                        user_dict = dict(row)
-                        users[user_dict['id']] = user_dict
-                logger.info(f"📥 Loaded {len(users)} users from SQLite")
-                return users
-            except Exception as e:
-                logger.error(f"Error loading users from SQLite: {e}")
-                return {}
-        
-        # Original MongoDB code
         try:
             collection = Database.get_collection('users')
             if isinstance(collection, dict):
@@ -290,92 +162,62 @@ class Database:
             users = {}
             for user in collection.find():
                 user_dict = {k: v for k, v in user.items() if k != '_id'}
-                # Convert MongoDB types to Python types
-                if 'created_at' in user_dict and isinstance(user_dict['created_at'], datetime):
-                    user_dict['created_at'] = user_dict['created_at'].isoformat()
-                if 'last_login' in user_dict and isinstance(user_dict['last_login'], datetime):
-                    user_dict['last_login'] = user_dict['last_login'].isoformat()
-                if 'premium_until' in user_dict and isinstance(user_dict['premium_until'], datetime):
-                    user_dict['premium_until'] = user_dict['premium_until'].isoformat()
-                if 'last_check_date' in user_dict and isinstance(user_dict['last_check_date'], datetime):
-                    user_dict['last_check_date'] = user_dict['last_check_date'].isoformat()
-                if 'reset_tokens' in user_dict and isinstance(user_dict['reset_tokens'], list):
-                    user_dict['reset_tokens'] = json.dumps(user_dict['reset_tokens'])
-                
-                users[user_dict['id']] = user_dict
+                # Convert ObjectId to string
+                if '_id' in user:
+                    user_dict['id'] = str(user['_id'])
+                users[user_dict.get('id', '')] = user_dict
             
             logger.info(f"📥 Loaded {len(users)} users from MongoDB")
             return users
             
         except Exception as e:
-            logger.error(f"Error loading users from MongoDB: {e}")
-            return getattr(Database, '_users_cache', {})
+            logger.error(f"Error loading users: {e}")
+            return {}
     
     @staticmethod
     def save_users(users):
-        # Check if using SQLite
-        if Database.is_sqlite_mode():
-            try:
-                with Database._sqlite_conn:
-                    cur = Database._sqlite_conn.cursor()
-                    # Clear table first
-                    cur.execute("DELETE FROM users")
-                    # Insert all users
-                    for user_id, user_data in users.items():
-                        placeholders = ', '.join(['?'] * (len(user_data) + 1))
-                        columns = ', '.join(['id'] + list(user_data.keys()))
-                        values = [user_id] + list(user_data.values())
-                        cur.execute(f"INSERT INTO users ({columns}) VALUES ({placeholders})", values)
-                logger.info(f"💾 Saved {len(users)} users to SQLite")
-                return True
-            except Exception as e:
-                logger.error(f"Error saving users to SQLite: {e}")
-                return False
-        
-        # Original MongoDB code
         try:
             collection = Database.get_collection('users')
             if isinstance(collection, dict):
                 # In-memory fallback
                 collection.clear()
                 collection.update(users)
-                logger.warning(f"⚠️ Saved {len(users)} users to in-memory storage")
                 return True
             
-            users_list = []
+            # For MongoDB
             for user_id, user_data in users.items():
-                # Ensure all required fields exist
-                user_data['id'] = user_id
-                user_data['_id'] = user_id  # Use user_id as _id for easier updates
+                # Ensure id is included
+                user_data['_id'] = user_id
                 
-                # Convert string dates back to datetime
-                if 'created_at' in user_data and isinstance(user_data['created_at'], str):
-                    user_data['created_at'] = datetime.fromisoformat(user_data['created_at'].replace('Z', '+00:00'))
-                if 'last_login' in user_data and isinstance(user_data['last_login'], str):
-                    user_data['last_login'] = datetime.fromisoformat(user_data['last_login'].replace('Z', '+00:00'))
-                if 'premium_until' in user_data and isinstance(user_data['premium_until'], str):
-                    user_data['premium_until'] = datetime.fromisoformat(user_data['premium_until'].replace('Z', '+00:00'))
-                if 'last_check_date' in user_data and isinstance(user_data['last_check_date'], str):
-                    user_data['last_check_date'] = datetime.fromisoformat(user_data['last_check_date'].replace('Z', '+00:00'))
+                # Convert string dates to datetime
+                date_fields = ['created_at', 'last_login', 'premium_until', 'last_check_date']
+                for field in date_fields:
+                    if field in user_data and isinstance(user_data[field], str):
+                        try:
+                            user_data[field] = datetime.fromisoformat(user_data[field].replace('Z', '+00:00'))
+                        except:
+                            pass
+                
+                # Handle reset_tokens
                 if 'reset_tokens' in user_data and isinstance(user_data['reset_tokens'], str):
-                    user_data['reset_tokens'] = json.loads(user_data['reset_tokens'])
+                    try:
+                        user_data['reset_tokens'] = json.loads(user_data['reset_tokens'])
+                    except:
+                        user_data['reset_tokens'] = []
                 
-                users_list.append(user_data)
+                # Update or insert
+                collection.replace_one({'_id': user_id}, user_data, upsert=True)
             
-            if users_list:
-                # Update or insert each user
-                for user in users_list:
-                    collection.replace_one({'_id': user['_id']}, user, upsert=True)
-            
-            logger.info(f"💾 Saved/Updated {len(users_list)} users to MongoDB")
+            logger.info(f"💾 Saved {len(users)} users to MongoDB")
             return True
             
         except Exception as e:
-            logger.error(f"Error saving users to MongoDB: {e}")
+            logger.error(f"Error saving users: {e}")
             import traceback
-            logger.error(f"Save users traceback: {traceback.format_exc()}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
+    # Similar simplified versions for other load/save methods
     @staticmethod
     def load_payments():
         try:
@@ -386,18 +228,15 @@ class Database:
             payments = {}
             for payment in collection.find():
                 payment_dict = {k: v for k, v in payment.items() if k != '_id'}
-                # Convert datetime to string
-                for date_field in ['created_at', 'verified_at']:
-                    if date_field in payment_dict and isinstance(payment_dict[date_field], datetime):
-                        payment_dict[date_field] = payment_dict[date_field].isoformat()
-                
-                payments[payment_dict['id']] = payment_dict
+                if '_id' in payment:
+                    payment_dict['id'] = str(payment['_id'])
+                payments[payment_dict.get('id', '')] = payment_dict
             
             return payments
             
         except Exception as e:
-            logger.error(f"Error loading payments from MongoDB: {e}")
-            return getattr(Database, '_payments_cache', {})
+            logger.error(f"Error loading payments: {e}")
+            return {}
     
     @staticmethod
     def save_payments(payments):
@@ -408,26 +247,14 @@ class Database:
                 collection.update(payments)
                 return True
             
-            payments_list = []
             for payment_id, payment_data in payments.items():
-                payment_data['id'] = payment_id
                 payment_data['_id'] = payment_id
-                
-                # Convert string dates back to datetime
-                for date_field in ['created_at', 'verified_at']:
-                    if date_field in payment_data and isinstance(payment_data[date_field], str):
-                        payment_data[date_field] = datetime.fromisoformat(payment_data[date_field].replace('Z', '+00:00'))
-                
-                payments_list.append(payment_data)
-            
-            if payments_list:
-                for payment in payments_list:
-                    collection.replace_one({'_id': payment['_id']}, payment, upsert=True)
+                collection.replace_one({'_id': payment_id}, payment_data, upsert=True)
             
             return True
             
         except Exception as e:
-            logger.error(f"Error saving payments to MongoDB: {e}")
+            logger.error(f"Error saving payments: {e}")
             return False
     
     @staticmethod
@@ -440,18 +267,13 @@ class Database:
             sessions = {}
             for session in collection.find():
                 session_dict = {k: v for k, v in session.items() if k != '_id'}
-                # Convert datetime to string
-                for date_field in ['created_at', 'expires_at', 'last_accessed']:
-                    if date_field in session_dict and isinstance(session_dict[date_field], datetime):
-                        session_dict[date_field] = session_dict[date_field].isoformat()
-                
-                sessions[session_dict.get('session_token')] = session_dict
+                sessions[session_dict.get('session_token', '')] = session_dict
             
             return sessions
             
         except Exception as e:
-            logger.error(f"Error loading sessions from MongoDB: {e}")
-            return getattr(Database, '_sessions_cache', {})
+            logger.error(f"Error loading sessions: {e}")
+            return {}
     
     @staticmethod
     def save_sessions(sessions):
@@ -462,26 +284,14 @@ class Database:
                 collection.update(sessions)
                 return True
             
-            sessions_list = []
             for session_token, session_data in sessions.items():
-                session_data['session_token'] = session_token
                 session_data['_id'] = session_token
-                
-                # Convert string dates back to datetime
-                for date_field in ['created_at', 'expires_at', 'last_accessed']:
-                    if date_field in session_data and isinstance(session_data[date_field], str):
-                        session_data[date_field] = datetime.fromisoformat(session_data[date_field].replace('Z', '+00:00'))
-                
-                sessions_list.append(session_data)
-            
-            if sessions_list:
-                for session in sessions_list:
-                    collection.replace_one({'_id': session['_id']}, session, upsert=True)
+                collection.replace_one({'_id': session_token}, session_data, upsert=True)
             
             return True
             
         except Exception as e:
-            logger.error(f"Error saving sessions to MongoDB: {e}")
+            logger.error(f"Error saving sessions: {e}")
             return False
     
     @staticmethod
@@ -494,18 +304,13 @@ class Database:
             otp_storage = {}
             for otp in collection.find():
                 otp_dict = {k: v for k, v in otp.items() if k != '_id'}
-                # Convert datetime to string
-                for date_field in ['created_at', 'expires_at']:
-                    if date_field in otp_dict and isinstance(otp_dict[date_field], datetime):
-                        otp_dict[date_field] = otp_dict[date_field].isoformat()
-                
-                otp_storage[otp_dict.get('email')] = otp_dict
+                otp_storage[otp_dict.get('email', '')] = otp_dict
             
             return otp_storage
             
         except Exception as e:
-            logger.error(f"Error loading OTP storage from MongoDB: {e}")
-            return getattr(Database, '_otp_cache', {})
+            logger.error(f"Error loading OTP storage: {e}")
+            return {}
     
     @staticmethod
     def save_otp_storage(otp_storage):
@@ -516,38 +321,24 @@ class Database:
                 collection.update(otp_storage)
                 return True
             
-            otp_list = []
             for email, otp_data in otp_storage.items():
-                otp_data['email'] = email
                 otp_data['_id'] = email
-                
-                # Convert string dates back to datetime
-                for date_field in ['created_at', 'expires_at']:
-                    if date_field in otp_data and isinstance(otp_data[date_field], str):
-                        otp_data[date_field] = datetime.fromisoformat(otp_data[date_field].replace('Z', '+00:00'))
-                
-                otp_list.append(otp_data)
-            
-            if otp_list:
-                for otp in otp_list:
-                    collection.replace_one({'_id': otp['_id']}, otp, upsert=True)
+                collection.replace_one({'_id': email}, otp_data, upsert=True)
             
             return True
             
         except Exception as e:
-            logger.error(f"Error saving OTP storage to MongoDB: {e}")
+            logger.error(f"Error saving OTP storage: {e}")
             return False
 
-# Add cleanup function for Vercel
+# Cleanup function
 def close_mongo_connection():
-    """Close MongoDB connection when app stops (important for Vercel)"""
     if Database._client:
         Database._client.close()
         logger.info("🔌 MongoDB connection closed")
         Database._client = None
         Database._db = None
 
-# Register cleanup
 atexit.register(close_mongo_connection)
 
 # =============================================
@@ -3453,39 +3244,35 @@ def favicon():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8001))
-    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
-    logger.info("🚀 Starting CyberGuard NG Server")
+    # Determine environment
+    is_vercel = os.environ.get('VERCEL') == '1'
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true' and not is_vercel
     
-    # Check for Vercel MongoDB connection
-    logger.info("🔍 Checking database connection...")
+    logger.info(f"🚀 Starting CyberGuard NG Server")
+    logger.info(f"🌐 Environment: {'Vercel' if is_vercel else 'Local'}")
     
-    if 'MONGODB_URI' in os.environ:
-        logger.info("✅ MONGODB_URI environment variable found")
-        logger.info(f"📦 Database name: atlas-purple-book")
-        
-        # Test connection - use 'is not None' instead of truth testing
-        db = Database.get_db()
-        if db is not None:
-            logger.info(f"✅ Connected to Vercel MongoDB Atlas successfully!")
-            try:
-                # Check if it's MongoDB database object
-                if hasattr(db, 'name'):
-                    logger.info(f"📊 Database: {db.name}")
-                if hasattr(db, 'list_collection_names'):
-                    collections = db.list_collection_names()
-                    logger.info(f"📁 Collections: {collections}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not get database info: {e}")
-        else:
-            logger.warning("⚠️ Could not connect to MongoDB - using in-memory fallback")
+    # Check MongoDB
+    logger.info("🔍 Checking MongoDB connection...")
+    db = Database.get_db()
+    
+    if db is not None:
+        logger.info(f"✅ MongoDB connected successfully!")
+        try:
+            logger.info(f"📊 Database: {db.name}")
+            logger.info(f"📁 Collections: {db.list_collection_names()}")
+        except:
+            pass
     else:
-        logger.warning("⚠️ MONGODB_URI not found - using in-memory storage")
+        logger.error("❌ MongoDB connection failed!")
+        if is_vercel:
+            logger.error("🚨 CRITICAL: MongoDB not working on Vercel")
+            logger.error("Check: 1) MONGODB_URI environment variable 2) MongoDB Atlas network access")
     
-    # Check email configuration
+    # Check email
     if EMAIL_CONFIG['sender_email'] and EMAIL_CONFIG['sender_password']:
-        logger.info(f"✅ Email service configured for: {EMAIL_CONFIG['sender_email']}")
+        logger.info(f"✅ Email configured")
     else:
-        logger.warning("⚠️ Email configuration missing - password reset won't work")
+        logger.warning("⚠️ Email not configured")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
