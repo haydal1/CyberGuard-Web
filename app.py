@@ -2945,20 +2945,37 @@ def api_user_stats():
         user_id = request.args.get('user_id')
         if not user_id:
             return jsonify({'success': False, 'message': 'User ID is required'})
-        
+
         user = UserManager.get_user(user_id)
         if not user:
             return jsonify({'success': False, 'message': 'User not found'})
-        
-        # Check if premium has expired
+
+        # Check if premium has expired - FIXED DATE COMPARISON
         if user['is_premium'] and user.get('premium_until'):
-            premium_until = datetime.strptime(user['premium_until'], '%Y-%m-%d').date() if isinstance(user['premium_until'], str) else user['premium_until']
-            if datetime.now().date() > premium_until:
-                user['is_premium'] = False
-                user['premium_until'] = None
-                user['premium_plan'] = None
-                UserManager.save_user(user)
-        
+            premium_until = user['premium_until']
+            
+            # Convert to datetime object if it's a string
+            if isinstance(premium_until, str):
+                try:
+                    premium_until = datetime.strptime(premium_until, '%Y-%m-%d')
+                except:
+                    # Try ISO format if Y-m-d fails
+                    try:
+                        premium_until = datetime.fromisoformat(premium_until.replace('Z', '+00:00'))
+                    except:
+                        premium_until = None
+            
+            # Compare dates properly
+            if premium_until:
+                # Convert premium_until to date for comparison
+                premium_until_date = premium_until.date() if hasattr(premium_until, 'date') else None
+                
+                if premium_until_date and datetime.now().date() > premium_until_date:
+                    user['is_premium'] = False
+                    user['premium_until'] = None
+                    user['premium_plan'] = None
+                    UserManager.save_user(user)
+
         return jsonify({
             'success': True,
             'is_premium': user['is_premium'],
@@ -2974,6 +2991,8 @@ def api_user_stats():
         })
     except Exception as e:
         logger.error(f"User stats error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'success': False, 'message': 'Server error'})
 
 # =============================================
